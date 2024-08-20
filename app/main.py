@@ -29,6 +29,7 @@ load_dotenv()  # Load environment variables from .env file
 
 JACKETT_API_URL = os.getenv("JACKETT_API_URL")
 API_KEY = os.getenv("API_KEY")
+PORT = int(os.getenv("PORT", 8000))  # Default to 8000 if PORT is not set
 
 CACHE_FILE = "configured_indexers.json"
 CACHE_DURATION = timedelta(minutes=30)
@@ -142,6 +143,10 @@ async def get_indexers():
 
     return JSONResponse(content={"indexers": configured_indexers})
 
+@app.get("/")
+async def root():
+    return {"message": "Hello freeloader!!, feel free to use /search and /indexers"}
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
