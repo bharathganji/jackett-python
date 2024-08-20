@@ -57,10 +57,22 @@ async def fetch_jackett_results_for_indexer(session: aiohttp.ClientSession, inde
         logger.error(f"Exception fetching from indexer {indexer_id}: {str(e)}")
         return [{"error": f"Exception fetching from indexer {indexer_id}: {str(e)}"}]
 
+def create_magnet_link(result):
+    torrenturl = result.get("Link")
+    infohash = result.get("InfoHash")
+    magneturi = result.get("MagnetUri")
+
+    if magneturi is not None:
+        return magneturi
+    elif torrenturl is not None and infohash is not None:
+        return f"magnet:?xt=urn:btih:{infohash.lower()}"
+    else:
+        return torrenturl
+
 def trimmed_result(result):
     return {
         "Title": result.get("Title"),
-        "Link": result.get("Link"),
+        "Link": create_magnet_link(result),
         "Size": result.get("Size"),
         "Seeders": result.get("Seeders"),
         "Leechers": result.get("Leechers"),
