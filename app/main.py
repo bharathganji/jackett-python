@@ -113,7 +113,7 @@ async def get_configured_indexers_from_file():
 
 async def get_configured_indexers():
     async with aiohttp.ClientSession() as session:
-        params = {"apikey": API_KEY}
+        params = {"apikey": API_KEY, "configured": 'true'}
         url = f"{JACKETT_API_URL}/api/v2.0/indexers"
         try:
             async with session.get(url, params=params) as response:
