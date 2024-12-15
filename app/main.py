@@ -82,12 +82,10 @@ async def fetch_jackett_results_for_indexer(session: aiohttp.ClientSession, inde
             if response.status == 200:
                 data = await response.json()
                 results = data.get("Results", [])
-                logger.info(f"Indexer {indexer_id} returned {
-                            len(results)} results.")
+                logger.info(f"Indexer {indexer_id} returned {len(results)} results.")
                 return [jsonable_encoder(trimmed_result(result)) for result in results]
             else:
-                logger.error(f"Error fetching from indexer {
-                             indexer_id}: {response.status}")
+                logger.error(f"Error fetching from indexer {indexer_id}: {response.status}")
                 return [{"error": f"Error fetching from indexer {indexer_id}: {response.status}"}]
     except Exception as e:
         logger.error(f"Exception fetching from indexer {indexer_id}: {str(e)}")
@@ -126,8 +124,7 @@ async def process_indexer(session: aiohttp.ClientSession, indexer_id: str, query
     logger.info(f"Starting query for indexer {indexer_id}")
     results = await fetch_jackett_results_for_indexer(session, indexer_id, query)
     end_time = time.time()
-    logger.info(f"Finished query for indexer {indexer_id}. Time taken: {
-                end_time - start_time:.2f} seconds")
+    logger.info(f"Finished query for indexer {indexer_id}. Time taken: {end_time - start_time:.2f} seconds")
     return results
 
 
