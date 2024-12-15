@@ -185,8 +185,7 @@ async def get_configured_indexers(jackett_cookie):
                         indexer["id"] for indexer in indexers_data if indexer.get("configured", False)]
                     return configured_indexers
                 else:
-                    error_message = f"Jackett API Error: {
-                        response.status} - {response.reason}"
+                    error_message = f"Jackett API Error: {response.status} - {response.reason}"
                     logger.error(error_message)
                     raise HTTPException(
                         status_code=response.status, detail=error_message)

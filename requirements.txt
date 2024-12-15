@@ -3,4 +3,3 @@ uvicorn
 python-dotenv
 aiohttp
 requests
-autopep8
