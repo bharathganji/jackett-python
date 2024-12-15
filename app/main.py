@@ -59,8 +59,7 @@ def get_jackett_cookie():
 
     # Check for successful response (replace with actual success check)
     if response.status_code != 200:
-        print(f"Failed to reach Pikpak Plus dashboard (status code: {
-              response.status_code})")
+        print(f"Failed to reach Pikpak Plus dashboard (status code: {response.status_code})")
         return None
 
     # Extract the 'Jackett' cookie from the session
