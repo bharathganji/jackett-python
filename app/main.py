@@ -10,6 +10,7 @@ import os
 from fastapi.middleware.cors import CORSMiddleware
 import time
 from dotenv import load_dotenv
+import requests
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,8 +38,42 @@ CACHE_DURATION = timedelta(minutes=30)
 # Initialize last cache update time
 last_cache_update = datetime.now()
 
+
+def get_jackett_cookie():
+    """
+    Simulates a login to Pikpak Plus and retrieves the 'Jackett' cookie.
+
+    Returns:
+      The value of the 'Jackett' cookie, or None if the login fails or the cookie is not found.
+    """
+    load_dotenv()  # Load environment variables from .env file
+    JACKETT_API_URL = os.getenv("JACKETT_API_URL")
+
+    url = f"{JACKETT_API_URL}/UI/Login"
+
+    # Start a session to maintain cookies and reuse connections
+    session = requests.Session()
+
+    # Send a GET request to initiate the login process (replace with actual login logic)
+    response = session.get(url)
+
+    # Check for successful response (replace with actual success check)
+    if response.status_code != 200:
+        print(f"Failed to reach Pikpak Plus dashboard (status code: {
+              response.status_code})")
+        return None
+
+    # Extract the 'Jackett' cookie from the session
+    try:
+        return session.cookies['Jackett']
+    except KeyError:
+        print("Jackett cookie not found in session.")
+        return None
+
+
 def get_search_results_url(indexer_id: str):
     return f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id}/results"
+
 
 async def fetch_jackett_results_for_indexer(session: aiohttp.ClientSession, indexer_id: str, query: str):
     url = get_search_results_url(indexer_id)
@@ -48,14 +83,17 @@ async def fetch_jackett_results_for_indexer(session: aiohttp.ClientSession, inde
             if response.status == 200:
                 data = await response.json()
                 results = data.get("Results", [])
-                logger.info(f"Indexer {indexer_id} returned {len(results)} results.")
+                logger.info(f"Indexer {indexer_id} returned {
+                            len(results)} results.")
                 return [jsonable_encoder(trimmed_result(result)) for result in results]
             else:
-                logger.error(f"Error fetching from indexer {indexer_id}: {response.status}")
+                logger.error(f"Error fetching from indexer {
+                             indexer_id}: {response.status}")
                 return [{"error": f"Error fetching from indexer {indexer_id}: {response.status}"}]
     except Exception as e:
         logger.error(f"Exception fetching from indexer {indexer_id}: {str(e)}")
         return [{"error": f"Exception fetching from indexer {indexer_id}: {str(e)}"}]
+
 
 def create_magnet_link(result):
     torrenturl = result.get("Link")
@@ -68,6 +106,7 @@ def create_magnet_link(result):
         return f"magnet:?xt=urn:btih:{infohash.lower()}"
     else:
         return torrenturl
+
 
 def trimmed_result(result):
     return {
@@ -82,12 +121,14 @@ def trimmed_result(result):
         "Details": result.get("Details"),
     }
 
+
 async def process_indexer(session: aiohttp.ClientSession, indexer_id: str, query: str):
     start_time = time.time()
     logger.info(f"Starting query for indexer {indexer_id}")
     results = await fetch_jackett_results_for_indexer(session, indexer_id, query)
     end_time = time.time()
-    logger.info(f"Finished query for indexer {indexer_id}. Time taken: {end_time - start_time:.2f} seconds")
+    logger.info(f"Finished query for indexer {indexer_id}. Time taken: {
+                end_time - start_time:.2f} seconds")
     return results
 
 
@@ -100,8 +141,15 @@ async def get_configured_indexers_from_file():
         except (FileNotFoundError, json.JSONDecodeError) as e:
             logger.error(f"Error reading cache file: {e}")
 
-    logger.info("Cache is stale or doesn't exist. Fetching configured indexers from Jackett...")
-    configured_indexers = await get_configured_indexers()
+    logger.info(
+        "Cache is stale or doesn't exist. Fetching configured indexers from Jackett...")
+
+    jackett_cookie = get_jackett_cookie()
+    if not jackett_cookie:
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve Jackett cookie.")
+
+    configured_indexers = await get_configured_indexers(jackett_cookie)
     try:
         with open(CACHE_FILE, "w") as f:
             json.dump(configured_indexers, f)
@@ -111,20 +159,41 @@ async def get_configured_indexers_from_file():
     last_cache_update = datetime.now()
     return configured_indexers
 
-async def get_configured_indexers():
+
+async def get_configured_indexers(jackett_cookie):
+    """
+    Fetches a list of configured indexers from the Jackett API.
+
+    Args:
+        jackett_cookie: The 'Jackett' cookie value required for authentication.
+
+    Returns:
+        A list of configured indexer IDs.
+
+    Raises:
+        HTTPException: If there's an issue with the Jackett API request.
+    """
+    load_dotenv()  # Load environment variables from .env file
+
     async with aiohttp.ClientSession() as session:
         params = {"apikey": API_KEY, "configured": 'true'}
+        # Set the cookie in the headers
+        headers = {'Cookie': f'Jackett={jackett_cookie}'}
         url = f"{JACKETT_API_URL}/api/v2.0/indexers"
+
         try:
-            async with session.get(url, params=params) as response:
+            async with session.get(url, params=params, headers=headers) as response:
                 if response.status == 200:
                     indexers_data = await response.json()
-                    configured_indexers = [indexer["id"] for indexer in indexers_data if indexer.get("configured", False)]
+                    configured_indexers = [
+                        indexer["id"] for indexer in indexers_data if indexer.get("configured", False)]
                     return configured_indexers
                 else:
-                    error_message = f"Jackett API Error: {response.status} - {response.reason}"
+                    error_message = f"Jackett API Error: {
+                        response.status} - {response.reason}"
                     logger.error(error_message)
-                    raise HTTPException(status_code=response.status, detail=error_message)
+                    raise HTTPException(
+                        status_code=response.status, detail=error_message)
         except aiohttp.ClientError as e:
             error_message = f"Error connecting to Jackett API: {str(e)}"
             logger.error(error_message)
@@ -134,26 +203,41 @@ async def get_configured_indexers():
 async def event_generator(query: str):
     configured_indexers = await get_configured_indexers_from_file()
     async with aiohttp.ClientSession() as session:
-        tasks = [asyncio.create_task(process_indexer(session, indexer_id, query)) for indexer_id in configured_indexers]
+        tasks = [asyncio.create_task(process_indexer(
+            session, indexer_id, query)) for indexer_id in configured_indexers]
         for completed_task in asyncio.as_completed(tasks):
             results = await completed_task
             for item in results:
                 yield f"data: {json.dumps(item)}\n\n"
 
+
 @app.get("/search")
 async def search(query: str):
     return StreamingResponse(event_generator(query), media_type="text/event-stream")
 
+
 @app.get("/indexers")
 async def get_indexers():
-    configured_indexers = await get_configured_indexers()
+    # Use the list of configured indexersconfigured_indexers = await get_configured_indexers(jackett_cookie)
     try:
+        jackett_cookie = get_jackett_cookie()
+        if not jackett_cookie:
+            raise HTTPException(
+                status_code=500, detail="Failed to retrieve Jackett cookie.")
+
+        configured_indexers = await get_configured_indexers(jackett_cookie)
+
+        # Cache the results for subsequent requests
         with open(CACHE_FILE, "w") as f:
             json.dump(configured_indexers, f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        logger.error(f"Error saving cache file: {e}")
+        logger.error(f"Error reading/writing cache file: {e}")
+    except Exception as e:
+        logger.exception("Error fetching indexers:", exc_info=e)
+        raise HTTPException(status_code=500, detail="Error fetching indexers.")
 
     return JSONResponse(content={"indexers": configured_indexers})
+
 
 @app.get("/")
 async def root():
