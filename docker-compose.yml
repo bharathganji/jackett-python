@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  jackett-python:
+    build: .
+    ports:
+      - "9889:9889"
+    env_file:
+      - .env
