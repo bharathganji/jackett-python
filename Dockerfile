@@ -16,10 +16,9 @@ COPY . .
 # Set environment variables
 ENV JACKETT_API_URL=https://your-jackett-instance.com
 ENV API_KEY=your_api_key
-ENV PORT=9889
 
 # Expose the port the app runs on
-EXPOSE ${PORT}
+EXPOSE 9889
 
 # Command to run the application
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT --reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9889", "--reload"]
