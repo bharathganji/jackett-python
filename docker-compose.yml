@@ -6,5 +6,6 @@ services:
     ports:
       - "9889:9889"
     environment:
-      - JACKETT_API_URL=https://your-jackett-instance.com
-      - API_KEY=your_api_key
+      - JACKETT_API_URL=${JACKETT_API_URL}
+      - API_KEY=${API_KEY}
+      - PORT=${PORT}

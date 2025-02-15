@@ -14,11 +14,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Set environment variables
-ENV JACKETT_API_URL=https://your-jackett-instance.com
-ENV API_KEY=your_api_key
+ENV JACKETT_API_URL=${JACKETT_API_URL}
+ENV API_KEY=${API_KEY}
+ENV PORT=${PORT}
 
 # Expose the port the app runs on
-EXPOSE 9889
+EXPOSE ${PORT}
 
 # Command to run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9889", "--reload"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT --reload"]
