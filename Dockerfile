@@ -22,4 +22,4 @@ ENV PORT=${PORT}
 EXPOSE ${PORT}
 
 # Command to run the application
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT --reload"]
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port $PORT --reload"]

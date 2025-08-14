@@ -1,4 +1,3 @@
-
 ## Jackett Search API - Python: Streaming API for searching torrent trackers efficiently
 
 This project provides a FastAPI-based API for searching torrent trackers using Jackett. It leverages asynchronous programming for efficient concurrent requests to multiple indexers. The API streams results in a JSON format, making it easy to integrate into various applications.
@@ -8,7 +7,7 @@ This project provides a FastAPI-based API for searching torrent trackers using J
 - **Concurrent Indexing:** Fetches results from multiple configured Jackett indexers simultaneously for faster search results.
 - **Error Handling:** Gracefully handles errors from individual indexers to prevent crashes.
 - **Streaming Responses:** Uses Server-Sent Events (SSE) to stream results as they become available, providing a real-time experience.
-- **Caching:** Caches configured indexers for improved performance.
+- **Caching:** Caches configured indexers for improved performance. The `/indexers` endpoint will use cached data if available, and only fetch fresh data from Jackett if the cache is empty.
 - **CORS Support:** Allows cross-origin requests for easier integration with front-end applications.
 
 ### Setup
@@ -27,15 +26,51 @@ pip install -r requirements.txt
 
 #### 3. Configure Environment Variables
 
-- **JACKETT_API_URL:** The URL of your Jackett instance (e.g., `https://your-jackett-instance.com`)
-- **API_KEY:** Your Jackett API key
+Create a `.env` file in the project root with the following content:
+
+```
+JACKETT_API_URL=https://your-jackett-instance.com
+API_KEY=your_api_key
+PORT=9889
+```
 
 #### 4. Run the API
 
 To run the API, execute the following command from the root of the project:
+
 ```
-uvicorn app.main:app --reload
+uvicorn app:app --reload
 ```
+
+Or, for production:
+
+```
+uvicorn app:app --host 0.0.0.0 --port 9889
+```
+
+#### 5. Project Structure
+
+```
+app/
+    main.py           # Entry point, launches FastAPI app
+    api/              # API endpoints and routing (__init__.py)
+    services/
+        cache.py        # Diskcache-based caching logic
+        jackett_client.py # Jackett API client logic
+        utils.py        # Utility functions (magnet link, result formatting)
+```
+
+#### 6. Dependencies
+
+Key packages used:
+- fastapi
+- uvicorn
+- httpx
+- orjson
+- diskcache
+- aiofiles
+- pydantic-settings
+- python-dotenv
 
 ![swagger page](2024-08-20_13-19.png)
 ![search api](2024-08-20_13-22.png)
@@ -50,4 +85,4 @@ This project is licensed under the [MIT License](LICENSE).
 
 ### Disclaimer
 
-This project is for educational purposes and is not intended for illegal activities. Please respect the copyright and intellectual property rights of others. 
+This project is for educational purposes and is not intended for illegal activities. Please respect the copyright and intellectual property rights of others.
