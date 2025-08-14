@@ -117,10 +117,7 @@ async def event_generator(query: str):
             task.cancel()
 
     # Final status
-    yield f"event: search_complete\ndata: {orjson.dumps({
-        'completed': list(completed_indexers),
-        'failed': list(failed_indexers)
-    }).decode()}\n\n"
+    yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(completed_indexers), 'failed': list(failed_indexers)}).decode()}\n\n"
 
 
 
