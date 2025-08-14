@@ -1,5 +1,5 @@
 import httpx
-from typing import Any
+from typing import Any, Optional
 from fastapi import HTTPException
 import logging
 from pydantic_settings import BaseSettings
@@ -92,7 +92,7 @@ async def stream_jackett_results_for_indexer(indexer_id: str, query: str, result
             "data": {"error": str(e)}
         })
 
-def get_jackett_cookie() -> str | None:
+def get_jackett_cookie() -> Optional[str]:
     """
     Simulates a login to Pikpak Plus and retrieves the 'Jackett' cookie.
     Returns:
