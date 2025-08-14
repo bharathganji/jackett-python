@@ -1,6 +1,6 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-def create_magnet_link(result: Dict[str, Any]) -> str | None:
+def create_magnet_link(result: Dict[str, Any]) -> Optional[str]:
     """
     Creates a magnet link from a result dictionary.
     """

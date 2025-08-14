@@ -39,7 +39,7 @@ async def event_generator(query: str):
         auth_start_time = time.time()
         logger.info("🔐 AUTHENTICATION REQUIRED: fetching Jackett cookie")
 
-        if not (jackett_cookie := await get_jackett_cookie()):
+        if not (jackett_cookie := get_jackett_cookie()):
             auth_time = (time.time() - auth_start_time) * 1000
             logger.error(f"❌ AUTHENTICATION FAILED: {auth_time:.2f}ms")
             yield "event: error\ndata: Failed to authenticate with Jackett\n\n"
