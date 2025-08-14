@@ -1,5 +1,5 @@
 import httpx
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List
 from fastapi import HTTPException
 import logging
 from pydantic_settings import BaseSettings
@@ -23,78 +23,212 @@ API_KEY = settings.API_KEY
 
 
 async def get_configured_indexers(jackett_cookie: str) -> list[str]:
+    if not jackett_cookie or not jackett_cookie.strip():
+        raise HTTPException(status_code=400, detail="Jackett cookie is required")
+
     params = {"apikey": API_KEY, "configured": 'true'}
-    headers = {'Cookie': f'Jackett={jackett_cookie}'}
+    headers = {'Cookie': f'Jackett={jackett_cookie.strip()}'}
     url = f"{JACKETT_API_URL}/api/v2.0/indexers"
+
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url, params=params, headers=headers)
-            if response.status_code == 200:
-                indexers_data = response.json()
-                return [indexer["id"] for indexer in indexers_data if indexer.get("configured", False)]
-            else:
-                error_message = f"Jackett API Error: {response.status_code} - {response.reason_phrase}"
-                raise HTTPException(
-                    status_code=response.status_code, detail=error_message)
+
+            indexers_data = response.json()
+            if not isinstance(indexers_data, list):
+                raise HTTPException(status_code=500, detail="Invalid response format from Jackett API")
+
+            configured_indexers = [
+                indexer["id"] for indexer in indexers_data
+                if isinstance(indexer, dict) and indexer.get("configured", False) and indexer.get("id")
+            ]
+
+            if not configured_indexers:
+                logger.warning("No configured indexers found")
+
+            return configured_indexers
+
+    except httpx.HTTPStatusError as e:
+        error_message = f"Jackett API HTTP error: {e.response.status_code}"
+        logger.error(error_message)
+        raise HTTPException(status_code=e.response.status_code, detail=error_message)
+    except httpx.TimeoutException:
+        error_message = "Timeout connecting to Jackett API"
+        logger.error(error_message)
+        raise HTTPException(status_code=504, detail=error_message)
     except httpx.HTTPError as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error connecting to Jackett API: {str(e)}")
+        error_message = f"Error connecting to Jackett API: {str(e)}"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+    except Exception as e:
+        error_message = f"Unexpected error fetching indexers: {str(e)}"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+
+
+async def get_detailed_configured_indexers(jackett_cookie: str) -> List[Dict[str, str]]:
+    """
+    Get detailed information about configured indexers including id and site_link.
+    Returns a list of dictionaries with 'id' and 'site_link' fields.
+    """
+    if not jackett_cookie or not jackett_cookie.strip():
+        raise HTTPException(status_code=400, detail="Jackett cookie is required")
+
+    params = {"apikey": API_KEY, "configured": 'true'}
+    headers = {'Cookie': f'Jackett={jackett_cookie.strip()}'}
+    url = f"{JACKETT_API_URL}/api/v2.0/indexers"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, params=params, headers=headers)
+
+            indexers_data = response.json()
+            if not isinstance(indexers_data, list):
+                raise HTTPException(status_code=500, detail="Invalid response format from Jackett API")
+
+            detailed_indexers = []
+            for indexer in indexers_data:
+                if (isinstance(indexer, dict) and
+                    indexer.get("configured", False) and
+                    indexer.get("id")):
+
+                    detailed_indexers.append({
+                        "id": indexer["id"],
+                        "site_link": indexer.get("site_link", "")
+                    })
+
+            if not detailed_indexers:
+                logger.warning("No configured indexers found")
+
+            return detailed_indexers
+
+    except httpx.HTTPStatusError as e:
+        error_message = f"Jackett API HTTP error: {e.response.status_code}"
+        logger.error(error_message)
+        raise HTTPException(status_code=e.response.status_code, detail=error_message)
+    except httpx.TimeoutException:
+        error_message = "Timeout connecting to Jackett API"
+        logger.error(error_message)
+        raise HTTPException(status_code=504, detail=error_message)
+    except httpx.HTTPError as e:
+        error_message = f"Error connecting to Jackett API: {str(e)}"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+    except Exception as e:
+        error_message = f"Unexpected error fetching detailed indexers: {str(e)}"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
 
 
 async def fetch_jackett_results_for_indexer(indexer_id: str, query: str):
-    url = f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id}/results"
-    params = {"apikey": API_KEY, "Query": query}
+    """
+    Fetch results from a single indexer.
+    Returns a list of results or empty list on error.
+    """
+    if not indexer_id or not indexer_id.strip():
+        logger.error("Invalid indexer_id provided")
+        return []
+
+    if not query or not query.strip():
+        logger.error("Invalid query provided")
+        return []
+
+    url = f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id.strip()}/results"
+    params = {"apikey": API_KEY, "Query": query.strip()}
+
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-            return data.get("Results", [])
+
+            if not isinstance(data, dict):
+                logger.error(f"Invalid response format from indexer {indexer_id}")
+                return []
+
+            results = data.get("Results", [])
+            if not isinstance(results, list):
+                logger.error(f"Invalid results format from indexer {indexer_id}")
+                return []
+
+            return results
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error fetching from indexer {indexer_id}: {e.response.status_code}")
+        return []
+    except httpx.TimeoutException:
+        logger.error(f"Timeout fetching from indexer {indexer_id}")
+        return []
     except Exception as e:
-        logger.error(f"Failed to fetch from indexer {indexer_id}: {str(e)}")
-        return [{"error": str(e)}]
+        logger.error(f"Unexpected error fetching from indexer {indexer_id}: {str(e)}")
+        return []
 
 async def stream_jackett_results_for_indexer(indexer_id: str, query: str, result_queue):
     """
     Fetch results from a single indexer and put them in the queue as they arrive.
     This allows for immediate streaming of individual results.
     """
-    url = f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id}/results"
-    params = {"apikey": API_KEY, "Query": query}
+    if not indexer_id or not indexer_id.strip():
+        logger.error("Invalid indexer_id provided")
+        return
+
+    if not query or not query.strip():
+        logger.error("Invalid query provided")
+        return
+
+    url = f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id.strip()}/results"
+    params = {"apikey": API_KEY, "Query": query.strip()}
+
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
+
+            if not isinstance(data, dict):
+                raise ValueError("Invalid response format from Jackett API")
+
             results = data.get("Results", [])
+            if not isinstance(results, list):
+                raise ValueError("Invalid results format from Jackett API")
 
             # Put each result in the queue immediately
             for result in results:
-                await result_queue.put({
-                    "type": "result",
-                    "indexer_id": indexer_id,
-                    "data": result
-                })
+                if isinstance(result, dict):
+                    try:
+                        await result_queue.put({
+                            "type": "result",
+                            "indexer_id": indexer_id,
+                            "data": result
+                        })
+                    except Exception as queue_error:
+                        logger.error(f"Failed to put result in queue for {indexer_id}: {str(queue_error)}")
 
             # Signal that this indexer is complete
-            await result_queue.put({
-                "type": "indexer_complete",
-                "indexer_id": indexer_id,
-                "data": None
-            })
+            try:
+                await result_queue.put({
+                    "type": "indexer_complete",
+                    "indexer_id": indexer_id,
+                    "data": None
+                })
+            except Exception as queue_error:
+                logger.error(f"Failed to put completion signal in queue for {indexer_id}: {str(queue_error)}")
 
     except Exception as e:
         logger.error(f"Failed to fetch from indexer {indexer_id}: {str(e)}")
         # Put error in queue
-        await result_queue.put({
-            "type": "indexer_error",
-            "indexer_id": indexer_id,
-            "data": {"error": str(e)}
-        })
+        try:
+            await result_queue.put({
+                "type": "indexer_error",
+                "indexer_id": indexer_id,
+                "data": {"error": str(e)}
+            })
+        except Exception as queue_error:
+            logger.error(f"Failed to put error in queue for {indexer_id}: {str(queue_error)}")
 
 def get_jackett_cookie() -> Optional[str]:
     """
-    Simulates a login to Pikpak Plus and retrieves the 'Jackett' cookie.
+    Retrieves the 'Jackett' cookie by making a test request.
     Returns:
       The value of the 'Jackett' cookie, or None if the login fails or the cookie is not found.
     """
@@ -106,9 +240,15 @@ def get_jackett_cookie() -> Optional[str]:
             # Check for Jackett cookie in the response
             jackett_cookie = response.cookies.get('Jackett')
             if not jackett_cookie:
-                print("Jackett cookie not found in session.")
+                logger.warning("Jackett cookie not found in session")
                 return None
             return jackett_cookie
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error during Jackett authentication: {e.response.status_code}")
+        return None
+    except httpx.TimeoutException:
+        logger.error("Timeout during Jackett authentication")
+        return None
     except Exception as e:
-        print(f"Error during Jackett login: {e}")
+        logger.error(f"Unexpected error during Jackett authentication: {str(e)}")
         return None
