@@ -5,7 +5,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = "./cache_dir"
+CACHE_DIR = os.path.join(os.getcwd(), "cache_dir")
 CACHE_KEY = "configured_indexers"
 CACHE_KEY_DETAILED = "configured_indexers_detailed"
 CACHE_KEY_COOKIE = "jackett_cookie"
@@ -19,7 +19,14 @@ _memory_cache = {}
 try:
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache = Cache(CACHE_DIR)
-    logger.info(f"Cache initialized at {CACHE_DIR}")
+    # Test cache with a simple operation
+    cache.set('test_key', 'test_value', expire=10)
+    test_result = cache.get('test_key')
+    if test_result == 'test_value':
+        logger.info(f"Cache initialized and tested successfully at {CACHE_DIR}")
+    else:
+        logger.warning(f"Cache initialized but test failed at {CACHE_DIR}")
+        cache = None
 except Exception as e:
     logger.error(f"Failed to initialize cache: {str(e)}")
     cache = None
@@ -71,22 +78,23 @@ def get_detailed_configured_indexers_from_cache() -> Optional[List[Dict[str, str
     Returns None if cache is unavailable or key doesn't exist.
     """
     if not cache:
-        logger.debug("Cache not available for detailed indexers")
+        logger.warning("Cache not available for detailed indexers")
         return None
 
     try:
-        logger.debug("Reading detailed indexers from cache")
+        logger.info(f"Attempting to read detailed indexers from cache key: {CACHE_KEY_DETAILED}")
         result = cache.get(CACHE_KEY_DETAILED)
+        logger.info(f"Cache get result: {type(result)}, length: {len(result) if isinstance(result, list) else 'N/A'}")
 
         if result and isinstance(result, list):
             # Validate that each item is a dict with required keys
             if all(isinstance(item, dict) and "id" in item and "site_link" in item for item in result):
-                logger.info(f"Retrieved {len(result)} detailed indexers from cache")
+                logger.info(f"✅ Retrieved {len(result)} detailed indexers from cache")
                 return result
             else:
                 logger.warning("Cache data validation failed - invalid structure")
         else:
-            logger.debug("No detailed indexers found in cache")
+            logger.info("No valid detailed indexers found in cache")
         return None
     except Exception as e:
         logger.error(f"Error reading detailed indexers from cache: {str(e)}")
@@ -127,7 +135,6 @@ def set_detailed_configured_indexers_in_cache(indexers: List[Dict[str, str]]) ->
         logger.error(f"Error writing detailed indexers to cache: {str(e)}")
         return False
 
-
 def get_jackett_cookie_from_cache() -> Optional[str]:
     """
     Loads Jackett cookie from in-memory cache.
@@ -139,7 +146,6 @@ def get_jackett_cookie_from_cache() -> Optional[str]:
         return result
     logger.info("No cached cookie found in memory")
     return None
-
 
 def set_jackett_cookie_in_cache(cookie: str) -> bool:
     """
