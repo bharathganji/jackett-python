@@ -7,6 +7,10 @@ from pydantic_settings import BaseSettings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Constants for error messages
+INVALID_RESPONSE_FORMAT = "Invalid response format from Jackett API"
+NO_CONFIGURED_INDEXERS = "No configured indexers found"
+
 
 class Settings(BaseSettings):
     JACKETT_API_URL: str
@@ -36,7 +40,7 @@ async def get_configured_indexers(jackett_cookie: str) -> list[str]:
 
             indexers_data = response.json()
             if not isinstance(indexers_data, list):
-                raise HTTPException(status_code=500, detail="Invalid response format from Jackett API")
+                raise HTTPException(status_code=500, detail=INVALID_RESPONSE_FORMAT)
 
             configured_indexers = [
                 indexer["id"] for indexer in indexers_data
@@ -44,7 +48,7 @@ async def get_configured_indexers(jackett_cookie: str) -> list[str]:
             ]
 
             if not configured_indexers:
-                logger.warning("No configured indexers found")
+                logger.warning(NO_CONFIGURED_INDEXERS)
 
             return configured_indexers
 
@@ -84,7 +88,7 @@ async def get_detailed_configured_indexers(jackett_cookie: str) -> List[Dict[str
 
             indexers_data = response.json()
             if not isinstance(indexers_data, list):
-                raise HTTPException(status_code=500, detail="Invalid response format from Jackett API")
+                raise HTTPException(status_code=500, detail=INVALID_RESPONSE_FORMAT)
 
             detailed_indexers = []
             for indexer in indexers_data:
@@ -98,7 +102,7 @@ async def get_detailed_configured_indexers(jackett_cookie: str) -> List[Dict[str
                     })
 
             if not detailed_indexers:
-                logger.warning("No configured indexers found")
+                logger.warning(NO_CONFIGURED_INDEXERS)
 
             return detailed_indexers
 
