@@ -8,7 +8,12 @@ logger = logging.getLogger(__name__)
 CACHE_DIR = "./cache_dir"
 CACHE_KEY = "configured_indexers"
 CACHE_KEY_DETAILED = "configured_indexers_detailed"
+CACHE_KEY_COOKIE = "jackett_cookie"
 CACHE_DURATION = 86400  # seconds (24 hours)
+CACHE_COOKIE_DURATION = 1209600  # seconds (14 days)
+
+# In-memory cache for cookie to work with multiprocessing
+_memory_cache = {}
 
 # Ensure cache directory exists
 try:
@@ -121,3 +126,30 @@ def set_detailed_configured_indexers_in_cache(indexers: List[Dict[str, str]]) ->
     except Exception as e:
         logger.error(f"Error writing detailed indexers to cache: {str(e)}")
         return False
+
+
+def get_jackett_cookie_from_cache() -> Optional[str]:
+    """
+    Loads Jackett cookie from in-memory cache.
+    Returns None if not found.
+    """
+    result = _memory_cache.get(CACHE_KEY_COOKIE)
+    if result and isinstance(result, str):
+        logger.info("Retrieved Jackett cookie from in-memory cache")
+        return result
+    logger.info("No cached cookie found in memory")
+    return None
+
+
+def set_jackett_cookie_in_cache(cookie: str) -> bool:
+    """
+    Saves Jackett cookie to in-memory cache.
+    Returns True if successful, False otherwise.
+    """
+    if not isinstance(cookie, str):
+        logger.error("Invalid cookie data type for cache")
+        return False
+
+    _memory_cache[CACHE_KEY_COOKIE] = cookie
+    logger.info("Successfully cached Jackett cookie in memory")
+    return True

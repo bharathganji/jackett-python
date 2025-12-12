@@ -11,10 +11,12 @@ from app.services.cache import (
     get_configured_indexers_from_cache,
     set_configured_indexers_in_cache,
     get_detailed_configured_indexers_from_cache,
-    set_detailed_configured_indexers_in_cache
+    set_detailed_configured_indexers_in_cache,
+    get_jackett_cookie_from_cache,
+    set_jackett_cookie_in_cache
 )
 from app.services.jackett_client import (
-    get_jackett_cookie,
+    get_jackett_cookie_cached,
     get_configured_indexers,
     get_detailed_configured_indexers,
     stream_jackett_results_for_indexer
@@ -45,6 +47,37 @@ def get_indexer_ids_from_cache():
 
     return None
 
+
+async def ensure_jackett_auth_and_indexers():
+    """
+    Common helper for authentication and indexer fetching/caching.
+    Returns (jackett_cookie, configured_indexers) or raises AuthError with error message.
+    Used by all event generators to avoid duplication.
+    """
+    jackett_cookie = get_jackett_cookie_cached()
+    if not jackett_cookie:
+        raise AuthError(AUTHENTICATION_ERROR)
+
+    configured_indexers = get_indexer_ids_from_cache()
+
+    if not configured_indexers:
+        try:
+            configured_indexers = await get_configured_indexers(jackett_cookie)
+            set_configured_indexers_in_cache(configured_indexers)
+        except HTTPException as e:
+            logger.error(f"Failed to fetch indexers: {e.detail}")
+            raise AuthError(orjson.dumps(e.detail).decode())
+        except Exception as e:
+            logger.error(f"Unexpected error fetching indexers: {str(e)}")
+            raise AuthError(INDEXER_FETCH_ERROR)
+
+    return jackett_cookie, configured_indexers
+
+
+class AuthError(Exception):
+    """Custom exception for authentication/indexer errors in generators"""
+    pass
+
 # Pydantic models
 class MultipleIndexerSearchRequest(BaseModel):
     indexer_ids: List[str]
@@ -64,26 +97,11 @@ app.add_middleware(
 async def event_generator(query: str):
     """Stream individual results from all indexers in parallel as they arrive"""
     try:
-        configured_indexers = get_indexer_ids_from_cache()
-
-        if not configured_indexers:
-            jackett_cookie = get_jackett_cookie()
-            if not jackett_cookie:
-                logger.error("Failed to authenticate with Jackett")
-                yield "event: error\ndata: Failed to authenticate with Jackett\n\n"
-                return
-
-            try:
-                configured_indexers = await get_configured_indexers(jackett_cookie)
-                set_configured_indexers_in_cache(configured_indexers)
-            except HTTPException as e:
-                logger.error(f"Failed to fetch indexers: {e.detail}")
-                yield f"event: error\ndata: {orjson.dumps(e.detail).decode()}\n\n"
-                return
-            except Exception as e:
-                logger.error(f"Unexpected error fetching indexers: {str(e)}")
-                yield "event: error\ndata: Unexpected error occurred while fetching indexers\n\n"
-                return
+        try:
+            jackett_cookie, configured_indexers = await ensure_jackett_auth_and_indexers()
+        except AuthError as e:
+            yield f"event: error\ndata: {e}\n\n"
+            return
 
         # Initialize result deduplicator
         deduplicator = ResultDeduplicator()
@@ -94,7 +112,7 @@ async def event_generator(query: str):
         # Launch all indexers in parallel, each streaming to the queue
         tasks = []
         for indexer_id in configured_indexers:
-            task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue))
+            task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
             tasks.append(task)
 
         completed_indexers = set()
@@ -153,27 +171,11 @@ async def event_generator(query: str):
 async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
     """Stream individual results from specified indexers in parallel as they arrive"""
     try:
-        # Get all configured indexers to validate the requested ones
-        configured_indexers = get_indexer_ids_from_cache()
-
-        if not configured_indexers:
-            jackett_cookie = get_jackett_cookie()
-            if not jackett_cookie:
-                logger.error(AUTHENTICATION_ERROR)
-                yield f"event: error\ndata: {AUTHENTICATION_ERROR}\n\n"
-                return
-
-            try:
-                configured_indexers = await get_configured_indexers(jackett_cookie)
-                set_configured_indexers_in_cache(configured_indexers)
-            except HTTPException as e:
-                logger.error(f"Failed to fetch indexers: {e.detail}")
-                yield f"event: error\ndata: {orjson.dumps(e.detail).decode()}\n\n"
-                return
-            except Exception as e:
-                logger.error(f"Unexpected error fetching indexers: {str(e)}")
-                yield f"event: error\ndata: {INDEXER_FETCH_ERROR}\n\n"
-                return
+        try:
+            jackett_cookie, configured_indexers = await ensure_jackett_auth_and_indexers()
+        except AuthError as e:
+            yield f"event: error\ndata: {e}\n\n"
+            return
 
         # Validate that all requested indexers exist
         invalid_indexers = []
@@ -202,7 +204,7 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
         # Launch valid indexers in parallel, each streaming to the queue
         tasks = []
         for indexer_id in valid_indexers:
-            task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue))
+            task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
             tasks.append(task)
 
         completed_indexers = set()
@@ -285,7 +287,7 @@ async def get_indexers():
             })
 
         # If not in cache, fetch from Jackett API
-        jackett_cookie = get_jackett_cookie()
+        jackett_cookie = get_jackett_cookie_cached()
         if not jackett_cookie:
             raise HTTPException(status_code=500, detail="Failed to retrieve Jackett cookie")
 
@@ -313,26 +315,11 @@ async def get_indexers():
 async def single_indexer_event_generator(indexer_id: str, query: str):
     """Stream results from a single indexer"""
     try:
-        # Validate indexer exists
-        configured_indexers = get_indexer_ids_from_cache()
-        if not configured_indexers:
-            jackett_cookie = get_jackett_cookie()
-            if not jackett_cookie:
-                logger.error("Failed to authenticate with Jackett")
-                yield "event: error\ndata: Failed to authenticate with Jackett\n\n"
-                return
-
-            try:
-                configured_indexers = await get_configured_indexers(jackett_cookie)
-                set_configured_indexers_in_cache(configured_indexers)
-            except HTTPException as e:
-                logger.error(f"Failed to fetch indexers: {e.detail}")
-                yield f"event: error\ndata: {orjson.dumps(e.detail).decode()}\n\n"
-                return
-            except Exception as e:
-                logger.error(f"Unexpected error fetching indexers: {str(e)}")
-                yield "event: error\ndata: Unexpected error occurred while fetching indexers\n\n"
-                return
+        try:
+            jackett_cookie, configured_indexers = await ensure_jackett_auth_and_indexers()
+        except AuthError as e:
+            yield f"event: error\ndata: {e}\n\n"
+            return
 
         if indexer_id not in configured_indexers:
             logger.error(f"Indexer not found: {indexer_id}")
@@ -343,7 +330,7 @@ async def single_indexer_event_generator(indexer_id: str, query: str):
         result_queue = asyncio.Queue()
 
         # Launch the single indexer task
-        task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue))
+        task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
 
         results_streamed = 0
         indexer_completed = False
