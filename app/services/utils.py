@@ -29,3 +29,27 @@ def trimmed_result(result: Dict[str, Any]) -> Dict[str, Any]:
         'year': result.get('Year'),
         "Details": result.get("Details"),
     }
+
+
+class ResultDeduplicator:
+    """
+    Helper class to deduplicate search results based on InfoHash.
+    """
+    def __init__(self):
+        self.seen_infohashes = set()
+
+    def is_duplicate(self, result: Dict[str, Any]) -> bool:
+        """
+        Check if a result is a duplicate based on InfoHash.
+        Returns True if duplicate, False if unique.
+        """
+        infohash = result.get("InfoHash")
+        if infohash:
+            if infohash in self.seen_infohashes:
+                return True
+            self.seen_infohashes.add(infohash)
+        return False
+
+    def reset(self):
+        """Reset the deduplicator for a new search."""
+        self.seen_infohashes = set()

@@ -14,13 +14,7 @@ CACHE_DURATION = 86400  # seconds (24 hours)
 try:
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache = Cache(CACHE_DIR)
-    # Test cache with a simple operation
-    cache.set('test_key', 'test_value', expire=10)
-    test_result = cache.get('test_key')
-    if test_result == 'test_value':
-        logger.info(f"Cache initialized and tested successfully at {CACHE_DIR}")
-    else:
-        logger.warning(f"Cache initialized but test failed at {CACHE_DIR}")
+    logger.info(f"Cache initialized at {CACHE_DIR}")
 except Exception as e:
     logger.error(f"Failed to initialize cache: {str(e)}")
     cache = None
@@ -72,23 +66,22 @@ def get_detailed_configured_indexers_from_cache() -> Optional[List[Dict[str, str
     Returns None if cache is unavailable or key doesn't exist.
     """
     if not cache:
-        logger.warning("Cache not available for detailed indexers")
+        logger.debug("Cache not available for detailed indexers")
         return None
 
     try:
-        logger.info(f"Attempting to read detailed indexers from cache key: {CACHE_KEY_DETAILED}")
+        logger.debug("Reading detailed indexers from cache")
         result = cache.get(CACHE_KEY_DETAILED)
-        logger.info(f"Cache get result: {type(result)}, length: {len(result) if isinstance(result, list) else 'N/A'}")
 
         if result and isinstance(result, list):
             # Validate that each item is a dict with required keys
             if all(isinstance(item, dict) and "id" in item and "site_link" in item for item in result):
-                logger.info(f"✅ Retrieved {len(result)} detailed indexers from cache")
+                logger.info(f"Retrieved {len(result)} detailed indexers from cache")
                 return result
             else:
                 logger.warning("Cache data validation failed - invalid structure")
         else:
-            logger.info("No valid detailed indexers found in cache")
+            logger.debug("No detailed indexers found in cache")
         return None
     except Exception as e:
         logger.error(f"Error reading detailed indexers from cache: {str(e)}")

@@ -19,23 +19,26 @@ from app.services.jackett_client import (
     get_detailed_configured_indexers,
     stream_jackett_results_for_indexer
 )
-from app.services.utils import trimmed_result
+from app.services.utils import trimmed_result, ResultDeduplicator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Constants for error messages and media types
+AUTHENTICATION_ERROR = "Failed to authenticate with Jackett"
+INDEXER_FETCH_ERROR = "Unexpected error occurred while fetching indexers"
+SEARCH_ERROR = "Unexpected error occurred during search"
+CRITICAL_ERROR = "Critical error occurred"
+QUERY_REQUIRED_ERROR = "Query parameter is required and cannot be empty"
+STREAM_MEDIA_TYPE = "text/event-stream"
+
 
 def get_indexer_ids_from_cache():
     """
-    Helper function to get indexer IDs from cache, trying both simple and detailed formats.
+    Helper function to get indexer IDs from cache using detailed format.
     Returns a list of indexer IDs or None if not found.
     """
-    # Try simple format first
-    simple_indexers = get_configured_indexers_from_cache()
-    if simple_indexers:
-        return simple_indexers
-
-    # Try detailed format
+    # Use detailed format only for consistency
     detailed_indexers = get_detailed_configured_indexers_from_cache()
     if detailed_indexers:
         return [indexer["id"] for indexer in detailed_indexers]
@@ -82,6 +85,9 @@ async def event_generator(query: str):
                 yield "event: error\ndata: Unexpected error occurred while fetching indexers\n\n"
                 return
 
+        # Initialize result deduplicator
+        deduplicator = ResultDeduplicator()
+
         # Create a queue to collect results from all indexers
         result_queue = asyncio.Queue()
 
@@ -94,6 +100,7 @@ async def event_generator(query: str):
         completed_indexers = set()
         failed_indexers = set()
         total_indexers = len(configured_indexers)
+        results_streamed = 0
 
         # Process results as they arrive in the queue
         while len(completed_indexers) + len(failed_indexers) < total_indexers:
@@ -102,10 +109,12 @@ async def event_generator(query: str):
                 item = await asyncio.wait_for(result_queue.get(), timeout=120.0)
 
                 if item["type"] == "result":
-                    # Stream individual result immediately
-                    result_data = trimmed_result(item["data"])
-                    result_data["IndexerId"] = item["indexer_id"]  # Ensure indexer ID is included
-                    yield f"data: {orjson.dumps(result_data).decode()}\n\n"
+                    # Check for duplicates before streaming
+                    if not deduplicator.is_duplicate(item["data"]):
+                        result_data = trimmed_result(item["data"])
+                        result_data["IndexerId"] = item["indexer_id"]  # Ensure indexer ID is included
+                        yield f"data: {orjson.dumps(result_data).decode()}\n\n"
+                        results_streamed += 1
 
                 elif item["type"] == "indexer_complete":
                     completed_indexers.add(item["indexer_id"])
@@ -125,7 +134,7 @@ async def event_generator(query: str):
                 break
             except Exception as e:
                 logger.error(f"Unexpected error during search: {str(e)}")
-                yield f"event: error\ndata: Unexpected error occurred during search\n\n"
+                yield "event: error\ndata: " + SEARCH_ERROR + "\n\n"
                 break
 
         # Cancel any remaining tasks
@@ -133,12 +142,12 @@ async def event_generator(query: str):
             if not task.done():
                 task.cancel()
 
-        # Final status
-        yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(completed_indexers), 'failed': list(failed_indexers)}).decode()}\n\n"
+        # Final status with results count
+        yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(completed_indexers), 'failed': list(failed_indexers), 'results_count': results_streamed}).decode()}\n\n"
 
     except Exception as e:
         logger.error(f"Critical error in event generator: {str(e)}")
-        yield f"event: error\ndata: Critical error occurred\n\n"
+        yield "event: error\ndata: " + CRITICAL_ERROR + "\n\n"
 
 
 async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
@@ -150,8 +159,8 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
         if not configured_indexers:
             jackett_cookie = get_jackett_cookie()
             if not jackett_cookie:
-                logger.error("Failed to authenticate with Jackett")
-                yield "event: error\ndata: Failed to authenticate with Jackett\n\n"
+                logger.error(AUTHENTICATION_ERROR)
+                yield f"event: error\ndata: {AUTHENTICATION_ERROR}\n\n"
                 return
 
             try:
@@ -163,7 +172,7 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
                 return
             except Exception as e:
                 logger.error(f"Unexpected error fetching indexers: {str(e)}")
-                yield "event: error\ndata: Unexpected error occurred while fetching indexers\n\n"
+                yield f"event: error\ndata: {INDEXER_FETCH_ERROR}\n\n"
                 return
 
         # Validate that all requested indexers exist
@@ -230,7 +239,7 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
                 break
             except Exception as e:
                 logger.error(f"Unexpected error during multiple indexer search: {str(e)}")
-                yield f"event: error\ndata: Unexpected error occurred during search\n\n"
+                yield "event: error\ndata: " + SEARCH_ERROR + "\n\n"
                 break
 
         # Cancel any remaining tasks
@@ -243,16 +252,16 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
 
     except Exception as e:
         logger.error(f"Critical error in multiple indexers generator: {str(e)}")
-        yield f"event: error\ndata: Critical error occurred\n\n"
+        yield "event: error\ndata: " + CRITICAL_ERROR + "\n\n"
 
 
 @app.get("/search")
 async def search(query: str):
     if not query or not query.strip():
-        raise HTTPException(status_code=400, detail="Query parameter is required and cannot be empty")
+        raise HTTPException(status_code=400, detail=QUERY_REQUIRED_ERROR)
 
     try:
-        return StreamingResponse(event_generator(query.strip()), media_type="text/event-stream")
+        return StreamingResponse(event_generator(query.strip()), media_type=STREAM_MEDIA_TYPE)
     except Exception as e:
         logger.error(f"Error in search endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error occurred during search")
@@ -382,7 +391,7 @@ async def single_indexer_event_generator(indexer_id: str, query: str):
 
     except Exception as e:
         logger.error(f"Critical error in single indexer generator: {str(e)}")
-        yield f"event: error\ndata: Critical error occurred\n\n"
+        yield "event: error\ndata: " + CRITICAL_ERROR + "\n\n"
 
 
 @app.get("/search/{indexer_id}")
@@ -415,7 +424,7 @@ async def search_multiple_indexers(query: str, request: MultipleIndexerSearchReq
         raise HTTPException(status_code=400, detail="Query parameter is required and cannot be empty")
     
     # Remove duplicates and empty/whitespace-only IDs
-    unique_indexer_ids = list(set([idx.strip() for idx in request.indexer_ids if idx and idx.strip()]))
+    unique_indexer_ids = list({idx.strip() for idx in request.indexer_ids if idx and idx.strip()})
     
     if not unique_indexer_ids:
         raise HTTPException(status_code=400, detail="At least one valid indexer ID is required")
