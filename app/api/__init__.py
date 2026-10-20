@@ -8,7 +8,6 @@ import orjson
 import asyncio
 import logging
 from app.services.cache import (
-    get_configured_indexers_from_cache,
     set_configured_indexers_in_cache,
     get_detailed_configured_indexers_from_cache,
     set_detailed_configured_indexers_in_cache,
