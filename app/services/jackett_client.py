@@ -1,5 +1,7 @@
+import ipaddress
 import httpx
 from typing import Any, Optional, Dict, List
+from urllib.parse import urlparse
 from fastapi import HTTPException
 import logging
 from pydantic_settings import BaseSettings
@@ -30,11 +32,41 @@ JACKETT_API_URL = settings.JACKETT_API_URL
 API_KEY = settings.API_KEY
 
 
+def is_secure_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme == 'https':
+        return True
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    if hostname in ('localhost', '127.0.0.1', '::1'):
+        return True
+
+    try:
+        # Allow private IP networks (RFC 1918)
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private:
+            return True
+    except ValueError:
+        pass
+
+    # Allow dotless hostnames (e.g. docker service names like 'jackett')
+    if '.' not in hostname:
+        return True
+
+    return False
+
+
 async def fetch_indexers_data(jackett_cookie: str) -> List[Dict]:
     """
     Fetch raw indexer data from Jackett API.
     Common function used by get_configured_indexers and get_detailed_configured_indexers.
     """
+    if not is_secure_url(JACKETT_API_URL):
+        raise HTTPException(status_code=400, detail="Insecure JACKETT_API_URL: HTTPS or localhost is required to transmit credentials securely")
+
     if not jackett_cookie or not jackett_cookie.strip():
         raise HTTPException(status_code=400, detail="Jackett cookie is required")
 
@@ -123,6 +155,10 @@ async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett
     Fetch results from a single indexer.
     Returns a list of results or empty list on error.
     """
+    if not is_secure_url(JACKETT_API_URL):
+        logger.error("Insecure JACKETT_API_URL: HTTPS or localhost is required")
+        return []
+
     if not indexer_id or not indexer_id.strip():
         logger.error("Invalid indexer_id provided")
         return []
@@ -176,6 +212,10 @@ async def stream_jackett_results_for_indexer(indexer_id: str, query: str, result
     Fetch results from a single indexer and put them in the queue as they arrive.
     This allows for immediate streaming of individual results.
     """
+    if not is_secure_url(JACKETT_API_URL):
+        logger.error("Insecure JACKETT_API_URL: HTTPS or localhost is required")
+        return
+
     if not indexer_id or not indexer_id.strip():
         logger.error("Invalid indexer_id provided")
         return
@@ -281,6 +321,10 @@ def get_jackett_cookie() -> Optional[str]:
     Returns:
       The value of the 'Jackett' cookie, or None if the login fails or the cookie is not found.
     """
+    if not is_secure_url(JACKETT_API_URL):
+        logger.error("Insecure JACKETT_API_URL: HTTPS or localhost is required for authentication")
+        return None
+
     dashboard_url = f"{JACKETT_API_URL}/UI/Dashboard"
     login_url = f"{JACKETT_API_URL}/UI/Login"
 
