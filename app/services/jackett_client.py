@@ -20,7 +20,6 @@ class Settings(BaseSettings):
     JACKETT_API_URL: str
     API_KEY: str
     PORT: int = 8000
-    ALLOWED_ORIGINS: str = ""
 
     class Config:
         env_file = ".env"
@@ -119,6 +118,25 @@ async def get_detailed_configured_indexers(jackett_cookie: str) -> List[Dict[str
     return detailed_indexers
 
 
+async def _make_indexer_request(indexer_id: str, query: str, jackett_cookie: str) -> dict:
+    """
+    Helper function to build the URL and perform the request to a single indexer.
+    """
+    url = f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id.strip()}/results"
+    params = {"apikey": API_KEY, "Query": query.strip()}
+    headers = {
+        'Cookie': f'Jackett={jackett_cookie.strip()}',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9'
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
 async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett_cookie: str):
     """
     Fetch results from a single indexer.
@@ -136,31 +154,19 @@ async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett
         logger.error("Invalid jackett_cookie provided")
         return []
 
-    url = f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id.strip()}/results"
-    params = {"apikey": API_KEY, "Query": query.strip()}
-    headers = {
-        'Cookie': f'Jackett={jackett_cookie.strip()}',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9'
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=60, verify=True) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+        data = await _make_indexer_request(indexer_id, query, jackett_cookie)
 
-            if not isinstance(data, dict):
-                logger.error(f"Invalid response format from indexer {indexer_id}")
-                return []
+        if not isinstance(data, dict):
+            logger.error(f"Invalid response format from indexer {indexer_id}")
+            return []
 
-            results = data.get("Results", [])
-            if not isinstance(results, list):
-                logger.error(f"Invalid results format from indexer {indexer_id}")
-                return []
+        results = data.get("Results", [])
+        if not isinstance(results, list):
+            logger.error(f"Invalid results format from indexer {indexer_id}")
+            return []
 
-            return results
+        return results
 
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error fetching from indexer {indexer_id}: {e.response.status_code}")
@@ -189,49 +195,37 @@ async def stream_jackett_results_for_indexer(indexer_id: str, query: str, result
         logger.error("Invalid jackett_cookie provided")
         return
 
-    url = f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id.strip()}/results"
-    params = {"apikey": API_KEY, "Query": query.strip()}
-    headers = {
-        'Cookie': f'Jackett={jackett_cookie.strip()}',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9'
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=60, verify=True) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+        data = await _make_indexer_request(indexer_id, query, jackett_cookie)
 
-            if not isinstance(data, dict):
-                raise ValueError("Invalid response format from Jackett API")
+        if not isinstance(data, dict):
+            raise ValueError("Invalid response format from Jackett API")
 
-            results = data.get("Results", [])
-            if not isinstance(results, list):
-                raise ValueError("Invalid results format from Jackett API")
+        results = data.get("Results", [])
+        if not isinstance(results, list):
+            raise ValueError("Invalid results format from Jackett API")
 
-            # Put each result in the queue immediately
-            for result in results:
-                if isinstance(result, dict):
-                    try:
-                        await result_queue.put({
-                            "type": "result",
-                            "indexer_id": indexer_id,
-                            "data": result
-                        })
-                    except Exception as queue_error:
-                        logger.error(f"Failed to put result in queue for {indexer_id}: {str(queue_error)}")
+        # Put each result in the queue immediately
+        for result in results:
+            if isinstance(result, dict):
+                try:
+                    await result_queue.put({
+                        "type": "result",
+                        "indexer_id": indexer_id,
+                        "data": result
+                    })
+                except Exception as queue_error:
+                    logger.error(f"Failed to put result in queue for {indexer_id}: {str(queue_error)}")
 
-            # Signal that this indexer is complete
-            try:
-                await result_queue.put({
-                    "type": "indexer_complete",
-                    "indexer_id": indexer_id,
-                    "data": None
-                })
-            except Exception as queue_error:
-                logger.error(f"Failed to put completion signal in queue for {indexer_id}: {str(queue_error)}")
+        # Signal that this indexer is complete
+        try:
+            await result_queue.put({
+                "type": "indexer_complete",
+                "indexer_id": indexer_id,
+                "data": None
+            })
+        except Exception as queue_error:
+            logger.error(f"Failed to put completion signal in queue for {indexer_id}: {str(queue_error)}")
 
     except Exception as e:
         logger.error(f"Failed to fetch from indexer {indexer_id}: {str(e)}")
