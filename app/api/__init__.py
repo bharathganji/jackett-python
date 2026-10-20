@@ -181,8 +181,9 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
         invalid_indexers = []
         valid_indexers = []
         
+        configured_indexers_set = set(configured_indexers)
         for indexer_id in indexer_ids:
-            if indexer_id in configured_indexers:
+            if indexer_id in configured_indexers_set:
                 valid_indexers.append(indexer_id)
             else:
                 invalid_indexers.append(indexer_id)
