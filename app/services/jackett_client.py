@@ -48,7 +48,7 @@ async def fetch_indexers_data(jackett_cookie: str) -> List[Dict]:
     url = f"{JACKETT_API_URL}/api/v2.0/indexers"
 
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, verify=True) as client:
             response = await client.get(url, params=params, headers=headers)
 
             # Check for redirect responses
@@ -145,7 +145,7 @@ async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60, verify=True) as client:
             response = await client.get(url, params=params, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -198,7 +198,7 @@ async def stream_jackett_results_for_indexer(indexer_id: str, query: str, result
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60, verify=True) as client:
             response = await client.get(url, params=params, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -285,7 +285,7 @@ def get_jackett_cookie() -> Optional[str]:
     login_url = f"{JACKETT_API_URL}/UI/Login"
 
     try:
-        with httpx.Client(follow_redirects=True) as client:
+        with httpx.Client(follow_redirects=True, verify=True) as client:
             # Step 1: Request to Dashboard (will redirect to Login)
             logger.info("Step 1: Requesting Dashboard (expecting redirect to Login)")
             response = client.get(dashboard_url)
