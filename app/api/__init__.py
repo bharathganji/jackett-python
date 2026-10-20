@@ -144,7 +144,7 @@ async def event_generator(query: str):
 
             except asyncio.TimeoutError:
                 # If we timeout, consider remaining indexers as failed
-                remaining_indexers = set(configured_indexers) - completed_indexers - failed_indexers
+                remaining_indexers = [idx for idx in configured_indexers if idx not in completed_indexers and idx not in failed_indexers]
                 for indexer_id in remaining_indexers:
                     failed_indexers.add(indexer_id)
                     yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
@@ -233,7 +233,7 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
 
             except asyncio.TimeoutError:
                 # If we timeout, consider remaining indexers as failed
-                remaining_indexers = set(valid_indexers) - completed_indexers - (failed_indexers - set(invalid_indexers))
+                remaining_indexers = [idx for idx in valid_indexers if idx not in completed_indexers and idx not in failed_indexers]
                 for indexer_id in remaining_indexers:
                     failed_indexers.add(indexer_id)
                     yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
