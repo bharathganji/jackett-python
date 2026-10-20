@@ -20,7 +20,6 @@ class Settings(BaseSettings):
     JACKETT_API_URL: str
     API_KEY: str
     PORT: int = 8000
-    ALLOWED_ORIGINS: str = ""
 
     class Config:
         env_file = ".env"

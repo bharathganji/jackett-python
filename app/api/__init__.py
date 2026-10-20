@@ -18,8 +18,7 @@ from app.services.jackett_client import (
     get_jackett_cookie_cached,
     get_configured_indexers,
     get_detailed_configured_indexers,
-    stream_jackett_results_for_indexer,
-    settings
+    stream_jackett_results_for_indexer
 )
 from app.services.utils import trimmed_result, ResultDeduplicator
 
@@ -83,12 +82,7 @@ class MultipleIndexerSearchRequest(BaseModel):
     indexer_ids: List[str]
 
 app = FastAPI()
-
-# Parse ALLOWED_ORIGINS from settings
-origins = []
-if settings.ALLOWED_ORIGINS:
-    origins = [origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",") if origin.strip()]
-
+origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
