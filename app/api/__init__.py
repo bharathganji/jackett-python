@@ -54,7 +54,7 @@ async def ensure_jackett_auth_and_indexers():
     Returns (jackett_cookie, configured_indexers) or raises AuthError with error message.
     Used by all event generators to avoid duplication.
     """
-    jackett_cookie = get_jackett_cookie_cached()
+    jackett_cookie = await get_jackett_cookie_cached()
     if not jackett_cookie:
         raise AuthError(AUTHENTICATION_ERROR)
 
@@ -292,7 +292,7 @@ async def get_indexers():
             })
 
         # If not in cache, fetch from Jackett API
-        jackett_cookie = get_jackett_cookie_cached()
+        jackett_cookie = await get_jackett_cookie_cached()
         if not jackett_cookie:
             raise HTTPException(status_code=500, detail="Failed to retrieve Jackett cookie")
 
