@@ -1,5 +1,5 @@
 import httpx
-from typing import Any, Optional, Dict, List
+from typing import Optional, Dict, List
 from fastapi import HTTPException
 import logging
 from pydantic_settings import BaseSettings
@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     JACKETT_API_URL: str
     API_KEY: str
     PORT: int = 8000
+    ALLOWED_ORIGINS: str = ""
 
     class Config:
         env_file = ".env"
@@ -244,7 +245,7 @@ async def stream_jackett_results_for_indexer(indexer_id: str, query: str, result
         except Exception as queue_error:
             logger.error(f"Failed to put error in queue for {indexer_id}: {str(queue_error)}")
 
-def get_jackett_cookie_cached() -> Optional[str]:
+async def get_jackett_cookie_cached() -> Optional[str]:
     """
     Retrieves the 'Jackett' cookie from cache first, and if not available,
     fetches it using the authentication flow and caches it for future use.
@@ -262,7 +263,7 @@ def get_jackett_cookie_cached() -> Optional[str]:
     
     # If not in cache, fetch a new one
     logger.info("No cached cookie found, fetching new Jackett cookie")
-    cookie = get_jackett_cookie()
+    cookie = await get_jackett_cookie()
     if cookie:
         # Cache the newly fetched cookie
         set_jackett_cookie_in_cache(cookie)
@@ -270,7 +271,7 @@ def get_jackett_cookie_cached() -> Optional[str]:
     return cookie
 
 
-def get_jackett_cookie() -> Optional[str]:
+async def get_jackett_cookie() -> Optional[str]:
     """
     Retrieves the 'Jackett' cookie by following the authentication flow:
     1. Request to Dashboard (follows redirect to Login)
@@ -285,25 +286,25 @@ def get_jackett_cookie() -> Optional[str]:
     login_url = f"{JACKETT_API_URL}/UI/Login"
 
     try:
-        with httpx.Client(follow_redirects=True, verify=True) as client:
+        async with httpx.Client(follow_redirects=True, verify=True) as client:
             # Step 1: Request to Dashboard (will redirect to Login)
             logger.info("Step 1: Requesting Dashboard (expecting redirect to Login)")
-            response = client.get(dashboard_url)
+            response = await client.get(dashboard_url)
             logger.debug(f"Dashboard response status: {response.status_code}")
 
             # Step 2: Request to Login with TestCookie
             logger.info("Step 2: Requesting Login with TestCookie")
-            response = client.get(login_url, cookies={"TestCookie": "1"})
+            response = await client.get(login_url, cookies={"TestCookie": "1"})
             logger.debug(f"Login with TestCookie response status: {response.status_code}")
 
             # Step 3: Request to Login with cookiesChecked
             logger.info("Step 3: Requesting Login with cookiesChecked")
-            response = client.get(f"{login_url}?cookiesChecked=1")
+            response = await client.get(f"{login_url}?cookiesChecked=1")
             logger.debug(f"Login with cookiesChecked response status: {response.status_code}")
 
             # Step 4: Final request to Dashboard with Jackett cookie
             logger.info("Step 4: Final request to Dashboard with Jackett cookie")
-            response = client.get(dashboard_url)
+            response = await client.get(dashboard_url)
             logger.debug(f"Final Dashboard response status: {response.status_code}")
 
             # Check for Jackett cookie in the client's cookie jar

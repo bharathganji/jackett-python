@@ -8,7 +8,6 @@ import orjson
 import asyncio
 import logging
 from app.services.cache import (
-    get_configured_indexers_from_cache,
     set_configured_indexers_in_cache,
     get_detailed_configured_indexers_from_cache,
     set_detailed_configured_indexers_in_cache,
@@ -19,7 +18,8 @@ from app.services.jackett_client import (
     get_jackett_cookie_cached,
     get_configured_indexers,
     get_detailed_configured_indexers,
-    stream_jackett_results_for_indexer
+    stream_jackett_results_for_indexer,
+    settings
 )
 from app.services.utils import trimmed_result, ResultDeduplicator
 
@@ -54,7 +54,7 @@ async def ensure_jackett_auth_and_indexers():
     Returns (jackett_cookie, configured_indexers) or raises AuthError with error message.
     Used by all event generators to avoid duplication.
     """
-    jackett_cookie = get_jackett_cookie_cached()
+    jackett_cookie = await get_jackett_cookie_cached()
     if not jackett_cookie:
         raise AuthError(AUTHENTICATION_ERROR)
 
@@ -83,7 +83,12 @@ class MultipleIndexerSearchRequest(BaseModel):
     indexer_ids: List[str]
 
 app = FastAPI()
-origins = ["*"]
+
+# Parse ALLOWED_ORIGINS from settings
+origins = []
+if settings.ALLOWED_ORIGINS:
+    origins = [origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -144,7 +149,7 @@ async def event_generator(query: str):
 
             except asyncio.TimeoutError:
                 # If we timeout, consider remaining indexers as failed
-                remaining_indexers = set(configured_indexers) - completed_indexers - failed_indexers
+                remaining_indexers = [idx for idx in configured_indexers if idx not in completed_indexers and idx not in failed_indexers]
                 for indexer_id in remaining_indexers:
                     failed_indexers.add(indexer_id)
                     yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
@@ -181,8 +186,9 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
         invalid_indexers = []
         valid_indexers = []
         
+        configured_indexers_set = set(configured_indexers)
         for indexer_id in indexer_ids:
-            if indexer_id in configured_indexers:
+            if indexer_id in configured_indexers_set:
                 valid_indexers.append(indexer_id)
             else:
                 invalid_indexers.append(indexer_id)
@@ -233,7 +239,7 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
 
             except asyncio.TimeoutError:
                 # If we timeout, consider remaining indexers as failed
-                remaining_indexers = set(valid_indexers) - completed_indexers - (failed_indexers - set(invalid_indexers))
+                remaining_indexers = [idx for idx in valid_indexers if idx not in completed_indexers and idx not in failed_indexers]
                 for indexer_id in remaining_indexers:
                     failed_indexers.add(indexer_id)
                     yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
@@ -287,7 +293,7 @@ async def get_indexers():
             })
 
         # If not in cache, fetch from Jackett API
-        jackett_cookie = get_jackett_cookie_cached()
+        jackett_cookie = await get_jackett_cookie_cached()
         if not jackett_cookie:
             raise HTTPException(status_code=500, detail="Failed to retrieve Jackett cookie")
 
