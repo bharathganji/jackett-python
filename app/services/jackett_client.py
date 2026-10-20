@@ -1,5 +1,7 @@
+import ipaddress
 import httpx
 from typing import Optional, Dict, List
+from urllib.parse import urlparse
 from fastapi import HTTPException
 import logging
 from pydantic_settings import BaseSettings
@@ -30,11 +32,41 @@ JACKETT_API_URL = settings.JACKETT_API_URL
 API_KEY = settings.API_KEY
 
 
+def is_secure_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme == 'https':
+        return True
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    if hostname in ('localhost', '127.0.0.1', '::1'):
+        return True
+
+    try:
+        # Allow private IP networks (RFC 1918)
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private:
+            return True
+    except ValueError:
+        pass
+
+    # Allow dotless hostnames (e.g. docker service names like 'jackett')
+    if '.' not in hostname:
+        return True
+
+    return False
+
+
 async def fetch_indexers_data(jackett_cookie: str) -> List[Dict]:
     """
     Fetch raw indexer data from Jackett API.
     Common function used by get_configured_indexers and get_detailed_configured_indexers.
     """
+    if not is_secure_url(JACKETT_API_URL):
+        raise HTTPException(status_code=400, detail="Insecure JACKETT_API_URL: HTTPS or localhost is required to transmit credentials securely")
+
     if not jackett_cookie or not jackett_cookie.strip():
         raise HTTPException(status_code=400, detail="Jackett cookie is required")
 
@@ -48,7 +80,7 @@ async def fetch_indexers_data(jackett_cookie: str) -> List[Dict]:
     url = f"{JACKETT_API_URL}/api/v2.0/indexers"
 
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, verify=True) as client:
             response = await client.get(url, params=params, headers=headers)
 
             # Check for redirect responses
@@ -118,10 +150,21 @@ async def get_detailed_configured_indexers(jackett_cookie: str) -> List[Dict[str
     return detailed_indexers
 
 
-async def _make_indexer_request(indexer_id: str, query: str, jackett_cookie: str) -> dict:
+async def _fetch_results_from_jackett(indexer_id: str, query: str, jackett_cookie: str):
     """
-    Helper function to build the URL and perform the request to a single indexer.
+    Helper function to fetch results from the Jackett API.
+    Raises ValueError or httpx exceptions on failure.
+    Returns a list of results on success.
     """
+    if not indexer_id or not indexer_id.strip():
+        raise ValueError("Invalid indexer_id provided")
+
+    if not query or not query.strip():
+        raise ValueError("Invalid query provided")
+
+    if not jackett_cookie or not jackett_cookie.strip():
+        raise ValueError("Invalid jackett_cookie provided")
+
     url = f"{JACKETT_API_URL}/api/v2.0/indexers/{indexer_id.strip()}/results"
     params = {"apikey": API_KEY, "Query": query.strip()}
     headers = {
@@ -131,10 +174,33 @@ async def _make_indexer_request(indexer_id: str, query: str, jackett_cookie: str
         'Accept-Language': 'en-US,en;q=0.9'
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=60, verify=True) as client:
         response = await client.get(url, params=params, headers=headers)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+
+        if not isinstance(data, dict):
+            raise ValueError("Invalid response format from Jackett API")
+
+        results = data.get("Results", [])
+        if not isinstance(results, list):
+            raise ValueError("Invalid results format from Jackett API")
+
+        return results
+
+
+async def _enqueue_message(result_queue, indexer_id: str, message_type: str, data=None):
+    """
+    Helper function to enqueue a message for stream_jackett_results_for_indexer.
+    """
+    try:
+        await result_queue.put({
+            "type": message_type,
+            "indexer_id": indexer_id,
+            "data": data
+        })
+    except Exception as queue_error:
+        logger.error(f"Failed to put {message_type} in queue for {indexer_id}: {str(queue_error)}")
 
 
 async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett_cookie: str):
@@ -142,32 +208,15 @@ async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett
     Fetch results from a single indexer.
     Returns a list of results or empty list on error.
     """
-    if not indexer_id or not indexer_id.strip():
-        logger.error("Invalid indexer_id provided")
-        return []
-
-    if not query or not query.strip():
-        logger.error("Invalid query provided")
-        return []
-
-    if not jackett_cookie or not jackett_cookie.strip():
-        logger.error("Invalid jackett_cookie provided")
+    if not is_secure_url(JACKETT_API_URL):
+        logger.error("Insecure JACKETT_API_URL: HTTPS or localhost is required")
         return []
 
     try:
-        data = await _make_indexer_request(indexer_id, query, jackett_cookie)
-
-        if not isinstance(data, dict):
-            logger.error(f"Invalid response format from indexer {indexer_id}")
-            return []
-
-        results = data.get("Results", [])
-        if not isinstance(results, list):
-            logger.error(f"Invalid results format from indexer {indexer_id}")
-            return []
-
-        return results
-
+        return await _fetch_results_from_jackett(indexer_id, query, jackett_cookie)
+    except ValueError as e:
+        logger.error(str(e))
+        return []
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error fetching from indexer {indexer_id}: {e.response.status_code}")
         return []
@@ -178,66 +227,35 @@ async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett
         logger.error(f"Unexpected error fetching from indexer {indexer_id}: {str(e)}")
         return []
 
+
 async def stream_jackett_results_for_indexer(indexer_id: str, query: str, result_queue, jackett_cookie: str):
     """
     Fetch results from a single indexer and put them in the queue as they arrive.
     This allows for immediate streaming of individual results.
     """
-    if not indexer_id or not indexer_id.strip():
-        logger.error("Invalid indexer_id provided")
-        return
-
-    if not query or not query.strip():
-        logger.error("Invalid query provided")
-        return
-
-    if not jackett_cookie or not jackett_cookie.strip():
-        logger.error("Invalid jackett_cookie provided")
+    if not is_secure_url(JACKETT_API_URL):
+        logger.error("Insecure JACKETT_API_URL: HTTPS or localhost is required")
         return
 
     try:
-        data = await _make_indexer_request(indexer_id, query, jackett_cookie)
-
-        if not isinstance(data, dict):
-            raise ValueError("Invalid response format from Jackett API")
-
-        results = data.get("Results", [])
-        if not isinstance(results, list):
-            raise ValueError("Invalid results format from Jackett API")
+        results = await _fetch_results_from_jackett(indexer_id, query, jackett_cookie)
 
         # Put each result in the queue immediately
         for result in results:
             if isinstance(result, dict):
-                try:
-                    await result_queue.put({
-                        "type": "result",
-                        "indexer_id": indexer_id,
-                        "data": result
-                    })
-                except Exception as queue_error:
-                    logger.error(f"Failed to put result in queue for {indexer_id}: {str(queue_error)}")
+                await _enqueue_message(result_queue, indexer_id, "result", result)
 
         # Signal that this indexer is complete
-        try:
-            await result_queue.put({
-                "type": "indexer_complete",
-                "indexer_id": indexer_id,
-                "data": None
-            })
-        except Exception as queue_error:
-            logger.error(f"Failed to put completion signal in queue for {indexer_id}: {str(queue_error)}")
+        await _enqueue_message(result_queue, indexer_id, "indexer_complete", None)
 
+    except ValueError as e:
+        logger.error(str(e))
+        # Logged as error, let's treat it as fetch error
+        await _enqueue_message(result_queue, indexer_id, "indexer_error", {"error": str(e)})
     except Exception as e:
         logger.error(f"Failed to fetch from indexer {indexer_id}: {str(e)}")
         # Put error in queue
-        try:
-            await result_queue.put({
-                "type": "indexer_error",
-                "indexer_id": indexer_id,
-                "data": {"error": str(e)}
-            })
-        except Exception as queue_error:
-            logger.error(f"Failed to put error in queue for {indexer_id}: {str(queue_error)}")
+        await _enqueue_message(result_queue, indexer_id, "indexer_error", {"error": str(e)})
 
 async def get_jackett_cookie_cached() -> Optional[str]:
     """
@@ -276,11 +294,15 @@ async def get_jackett_cookie() -> Optional[str]:
     Returns:
       The value of the 'Jackett' cookie, or None if the login fails or the cookie is not found.
     """
+    if not is_secure_url(JACKETT_API_URL):
+        logger.error("Insecure JACKETT_API_URL: HTTPS or localhost is required for authentication")
+        return None
+
     dashboard_url = f"{JACKETT_API_URL}/UI/Dashboard"
     login_url = f"{JACKETT_API_URL}/UI/Login"
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, verify=True) as client:
             # Step 1: Request to Dashboard (will redirect to Login)
             logger.info("Step 1: Requesting Dashboard (expecting redirect to Login)")
             response = await client.get(dashboard_url)
