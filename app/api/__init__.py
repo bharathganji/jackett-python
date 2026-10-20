@@ -22,6 +22,7 @@ from app.services.jackett_client import (
     settings
 )
 from app.services.utils import trimmed_result, ResultDeduplicator
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -86,12 +87,26 @@ app = FastAPI()
 
 # Parse ALLOWED_ORIGINS from settings
 origins = []
+origin_regexes = []
+allow_origin_regex = None
+
 if settings.ALLOWED_ORIGINS:
-    origins = [origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",") if origin.strip()]
+    parsed_origins = [origin.strip() for origin in settings.ALLOWED_ORIGINS.split(",") if origin.strip()]
+    for origin in parsed_origins:
+        if "*" in origin and origin != "*":
+            # Convert simple wildcard like https://*.example.com to a regex
+            regex_str = re.escape(origin).replace("\\*", ".*")
+            origin_regexes.append(f"^{regex_str}$")
+        else:
+            origins.append(origin)
+
+    if origin_regexes:
+        allow_origin_regex = "|".join(origin_regexes)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
