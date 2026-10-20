@@ -1,5 +1,5 @@
 from diskcache import Cache
-from typing import Any, Optional, List, Dict, Union
+from typing import Optional, List, Dict
 import logging
 import os
 
@@ -87,12 +87,8 @@ def get_detailed_configured_indexers_from_cache() -> Optional[List[Dict[str, str
         logger.info(f"Cache get result: {type(result)}, length: {len(result) if isinstance(result, list) else 'N/A'}")
 
         if result and isinstance(result, list):
-            # Validate that each item is a dict with required keys
-            if all(isinstance(item, dict) and "id" in item and "site_link" in item for item in result):
-                logger.info(f"✅ Retrieved {len(result)} detailed indexers from cache")
-                return result
-            else:
-                logger.warning("Cache data validation failed - invalid structure")
+            logger.info(f"✅ Retrieved {len(result)} detailed indexers from cache")
+            return result
         else:
             logger.info("No valid detailed indexers found in cache")
         return None
