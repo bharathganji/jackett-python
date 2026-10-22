@@ -37,12 +37,11 @@ STREAM_MEDIA_TYPE = "text/event-stream"
 def get_indexer_ids_from_cache():
     """
     Helper function to get indexer IDs from cache using detailed format.
-    Returns a list of indexer IDs or None if not found.
+    Returns a set of indexer IDs or None if not found.
     """
-    # Use detailed format only for consistency
     detailed_indexers = get_detailed_configured_indexers_from_cache()
     if detailed_indexers:
-        return [indexer["id"] for indexer in detailed_indexers]
+        return {indexer["id"] for indexer in detailed_indexers}
 
     return None
 
@@ -61,8 +60,9 @@ async def ensure_jackett_auth_and_indexers():
 
     if not configured_indexers:
         try:
-            configured_indexers = await get_configured_indexers(jackett_cookie)
-            set_configured_indexers_in_cache(configured_indexers)
+            configured_indexers_list = await get_configured_indexers(jackett_cookie)
+            set_configured_indexers_in_cache(configured_indexers_list)
+            configured_indexers = set(configured_indexers_list)
         except HTTPException as e:
             logger.error(f"Failed to fetch indexers: {e.detail}")
             raise AuthError(orjson.dumps(e.detail).decode())
@@ -143,7 +143,7 @@ async def event_generator(query: str):
 
             except asyncio.TimeoutError:
                 # If we timeout, consider remaining indexers as failed
-                remaining_indexers = [idx for idx in configured_indexers if idx not in completed_indexers and idx not in failed_indexers]
+                remaining_indexers = list(configured_indexers.difference(completed_indexers, failed_indexers))
                 for indexer_id in remaining_indexers:
                     failed_indexers.add(indexer_id)
                     yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
@@ -180,9 +180,8 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
         invalid_indexers = []
         valid_indexers = []
         
-        configured_indexers_set = set(configured_indexers)
         for indexer_id in indexer_ids:
-            if indexer_id in configured_indexers_set:
+            if indexer_id in configured_indexers:
                 valid_indexers.append(indexer_id)
             else:
                 invalid_indexers.append(indexer_id)
