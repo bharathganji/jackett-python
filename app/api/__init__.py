@@ -93,6 +93,70 @@ app.add_middleware(
 
 
 
+
+
+async def process_results_queue(
+    result_queue: asyncio.Queue,
+    valid_indexers: set,
+    deduplicator=None,
+    is_single: bool = False
+):
+    """Common queue polling loop for generators."""
+    completed_indexers = set()
+    failed_indexers = set()
+    total_indexers = len(valid_indexers)
+    results_streamed = 0
+
+    # Process results as they arrive in the queue
+    while len(completed_indexers) + len(failed_indexers) < total_indexers:
+        try:
+            # Wait for next result with timeout to avoid hanging
+            item = await asyncio.wait_for(result_queue.get(), timeout=120.0)
+
+            if item["type"] == "result":
+                # Check for duplicates before streaming
+                if deduplicator is None or not deduplicator.is_duplicate(item["data"]):
+                    result_data = trimmed_result(item["data"])
+                    result_data["IndexerId"] = item["indexer_id"]
+                    yield f"data: {orjson.dumps(result_data).decode()}\n\n"
+                    results_streamed += 1
+
+            elif item["type"] == "indexer_complete":
+                completed_indexers.add(item["indexer_id"])
+                yield f"event: indexer_complete\ndata: {item['indexer_id']}\n\n"
+
+            elif item["type"] == "indexer_error":
+                failed_indexers.add(item["indexer_id"])
+                yield f"event: indexer_error\ndata: {item['indexer_id']}: {item['data']['error']}\n\n"
+
+        except asyncio.TimeoutError:
+            # If we timeout, consider remaining indexers as failed
+            remaining_indexers = list(valid_indexers.difference(completed_indexers, failed_indexers))
+            for indexer_id in remaining_indexers:
+                failed_indexers.add(indexer_id)
+                yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
+            if is_single:
+                logger.warning(f"Single indexer search timeout: {list(remaining_indexers)[0] if remaining_indexers else 'unknown'}")
+            else:
+                logger.warning(f"Search timeout: {len(remaining_indexers)} indexers timed out")
+            break
+        except Exception as e:
+            if is_single:
+                idx = list(valid_indexers)[0] if valid_indexers else 'unknown'
+                logger.error(f"Error processing results from {idx}: {str(e)}")
+                yield f"event: indexer_error\ndata: {idx}: Processing error\n\n"
+            else:
+                logger.error(f"Unexpected error during search: {str(e)}")
+                yield "event: error\ndata: " + SEARCH_ERROR + "\n\n"
+            break
+
+    yield {
+        "completed": completed_indexers,
+        "failed": failed_indexers,
+        "results_streamed": results_streamed
+    }
+
+
 async def event_generator(query: str):
     """Stream individual results from all indexers in parallel as they arrive"""
     try:
@@ -114,45 +178,12 @@ async def event_generator(query: str):
             task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
             tasks.append(task)
 
-        completed_indexers = set()
-        failed_indexers = set()
-        total_indexers = len(configured_indexers)
-        results_streamed = 0
-
-        # Process results as they arrive in the queue
-        while len(completed_indexers) + len(failed_indexers) < total_indexers:
-            try:
-                # Wait for next result with timeout to avoid hanging
-                item = await asyncio.wait_for(result_queue.get(), timeout=120.0)
-
-                if item["type"] == "result":
-                    # Check for duplicates before streaming
-                    if not deduplicator.is_duplicate(item["data"]):
-                        result_data = trimmed_result(item["data"])
-                        result_data["IndexerId"] = item["indexer_id"]  # Ensure indexer ID is included
-                        yield f"data: {orjson.dumps(result_data).decode()}\n\n"
-                        results_streamed += 1
-
-                elif item["type"] == "indexer_complete":
-                    completed_indexers.add(item["indexer_id"])
-                    yield f"event: indexer_complete\ndata: {item['indexer_id']}\n\n"
-
-                elif item["type"] == "indexer_error":
-                    failed_indexers.add(item["indexer_id"])
-                    yield f"event: indexer_error\ndata: {item['indexer_id']}: {item['data']['error']}\n\n"
-
-            except asyncio.TimeoutError:
-                # If we timeout, consider remaining indexers as failed
-                remaining_indexers = list(configured_indexers.difference(completed_indexers, failed_indexers))
-                for indexer_id in remaining_indexers:
-                    failed_indexers.add(indexer_id)
-                    yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
-                logger.warning(f"Search timeout: {len(remaining_indexers)} indexers timed out")
+        stats = {}
+        async for event in process_results_queue(result_queue, configured_indexers, deduplicator):
+            if isinstance(event, dict):
+                stats = event
                 break
-            except Exception as e:
-                logger.error(f"Unexpected error during search: {str(e)}")
-                yield "event: error\ndata: " + SEARCH_ERROR + "\n\n"
-                break
+            yield event
 
         # Cancel any remaining tasks
         for task in tasks:
@@ -160,7 +191,7 @@ async def event_generator(query: str):
                 task.cancel()
 
         # Final status with results count
-        yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(completed_indexers), 'failed': list(failed_indexers), 'results_count': results_streamed}).decode()}\n\n"
+        yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(stats['completed']), 'failed': list(stats['failed']), 'results_count': stats['results_streamed']}).decode()}\n\n"
 
     except Exception as e:
         logger.error(f"Critical error in event generator: {str(e)}")
@@ -206,42 +237,14 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
             task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
             tasks.append(task)
 
-        completed_indexers = set()
-        failed_indexers = set(invalid_indexers)  # Start with invalid indexers as failed
-        total_valid_indexers = len(valid_indexers)
-
-        # Process results as they arrive in the queue
-        while len(completed_indexers) < total_valid_indexers and len(completed_indexers) + len(failed_indexers) - len(invalid_indexers) < total_valid_indexers:
-            try:
-                # Wait for next result with timeout to avoid hanging
-                item = await asyncio.wait_for(result_queue.get(), timeout=120.0)
-
-                if item["type"] == "result":
-                    # Stream individual result immediately
-                    result_data = trimmed_result(item["data"])
-                    result_data["IndexerId"] = item["indexer_id"]  # Ensure indexer ID is included
-                    yield f"data: {orjson.dumps(result_data).decode()}\n\n"
-
-                elif item["type"] == "indexer_complete":
-                    completed_indexers.add(item["indexer_id"])
-                    yield f"event: indexer_complete\ndata: {item['indexer_id']}\n\n"
-
-                elif item["type"] == "indexer_error":
-                    failed_indexers.add(item["indexer_id"])
-                    yield f"event: indexer_error\ndata: {item['indexer_id']}: {item['data']['error']}\n\n"
-
-            except asyncio.TimeoutError:
-                # If we timeout, consider remaining indexers as failed
-                remaining_indexers = [idx for idx in valid_indexers if idx not in completed_indexers and idx not in failed_indexers]
-                for indexer_id in remaining_indexers:
-                    failed_indexers.add(indexer_id)
-                    yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
-                logger.warning(f"Multiple indexer search timeout: {len(remaining_indexers)} indexers timed out")
+        stats = {}
+        async for event in process_results_queue(result_queue, set(valid_indexers)):
+            if isinstance(event, dict):
+                stats = event
                 break
-            except Exception as e:
-                logger.error(f"Unexpected error during multiple indexer search: {str(e)}")
-                yield "event: error\ndata: " + SEARCH_ERROR + "\n\n"
-                break
+            yield event
+
+        failed_indexers = stats['failed'].union(set(invalid_indexers))
 
         # Cancel any remaining tasks
         for task in tasks:
@@ -249,7 +252,7 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
                 task.cancel()
 
         # Final status
-        yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(completed_indexers), 'failed': list(failed_indexers)}).decode()}\n\n"
+        yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(stats['completed']), 'failed': list(failed_indexers)}).decode()}\n\n"
 
     except Exception as e:
         logger.error(f"Critical error in multiple indexers generator: {str(e)}")
@@ -331,49 +334,20 @@ async def single_indexer_event_generator(indexer_id: str, query: str):
         # Launch the single indexer task
         task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
 
-        results_streamed = 0
-        indexer_completed = False
-        indexer_failed = False
-
-        # Process results as they arrive
-        while not indexer_completed and not indexer_failed:
-            try:
-                # Wait for next result with timeout
-                item = await asyncio.wait_for(result_queue.get(), timeout=120.0)
-
-                if item["type"] == "result":
-                    # Stream individual result immediately
-                    result_data = trimmed_result(item["data"])
-                    result_data["IndexerId"] = item["indexer_id"]
-                    yield f"data: {orjson.dumps(result_data).decode()}\n\n"
-                    results_streamed += 1
-
-                elif item["type"] == "indexer_complete":
-                    indexer_completed = True
-                    yield f"event: indexer_complete\ndata: {item['indexer_id']}\n\n"
-
-                elif item["type"] == "indexer_error":
-                    indexer_failed = True
-                    yield f"event: indexer_error\ndata: {item['indexer_id']}: {item['data']['error']}\n\n"
-
-            except asyncio.TimeoutError:
-                indexer_failed = True
-                yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
-                logger.warning(f"Single indexer search timeout: {indexer_id}")
+        stats = {}
+        async for event in process_results_queue(result_queue, {indexer_id}, is_single=True):
+            if isinstance(event, dict):
+                stats = event
                 break
-            except Exception as e:
-                indexer_failed = True
-                logger.error(f"Error processing results from {indexer_id}: {str(e)}")
-                yield f"event: indexer_error\ndata: {indexer_id}: Processing error\n\n"
-                break
+            yield event
 
         # Cancel the task if it's still running
         if not task.done():
             task.cancel()
 
         # Final status
-        status = "completed" if indexer_completed else "failed"
-        yield f"event: search_complete\ndata: {orjson.dumps({'indexer': indexer_id, 'status': status, 'results_count': results_streamed}).decode()}\n\n"
+        status = "completed" if indexer_id in stats['completed'] else "failed"
+        yield f"event: search_complete\ndata: {orjson.dumps({'indexer': indexer_id, 'status': status, 'results_count': stats['results_streamed']}).decode()}\n\n"
 
     except Exception as e:
         logger.error(f"Critical error in single indexer generator: {str(e)}")
