@@ -186,6 +186,7 @@ async def event_generator(query: str):
                 logger.error(f"Unexpected error during search: {str(e)}")
                 yield "event: error\ndata: " + SEARCH_ERROR + "\n\n"
                 break
+            yield event
 
         # Cancel any remaining tasks
         for task in tasks:
@@ -271,6 +272,9 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
                 logger.error(f"Unexpected error during multiple indexer search: {str(e)}")
                 yield "event: error\ndata: " + SEARCH_ERROR + "\n\n"
                 break
+            yield event
+
+        failed_indexers = stats['failed'].union(set(invalid_indexers))
 
         # Cancel any remaining tasks
         for task in tasks:
@@ -392,6 +396,7 @@ async def single_indexer_event_generator(indexer_id: str, query: str):
                 logger.error(f"Error processing results from {indexer_id}: {str(e)}")
                 yield f"event: indexer_error\ndata: {indexer_id}: Processing error\n\n"
                 break
+            yield event
 
         # Cancel the task if it's still running
         if not task.done():
