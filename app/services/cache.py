@@ -1,7 +1,8 @@
-from diskcache import Cache
-from typing import Optional, List, Dict
 import logging
 import os
+from typing import Dict, List, Optional
+
+from diskcache import Cache
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def set_detailed_configured_indexers_in_cache(indexers: List[Dict[str, str]]) ->
 
         # Verify the write was successful
         verify_result = cache.get(CACHE_KEY_DETAILED)
-        if verify_result and len(verify_result) == len(indexers):
+        if isinstance(verify_result, list) and len(verify_result) == len(indexers):
             logger.info(f"✅ Successfully cached {len(indexers)} detailed indexers")
             return True
         else:
@@ -133,19 +134,30 @@ def set_detailed_configured_indexers_in_cache(indexers: List[Dict[str, str]]) ->
 
 def get_jackett_cookie_from_cache() -> Optional[str]:
     """
-    Loads Jackett cookie from in-memory cache.
+    Loads Jackett cookie from in-memory cache or diskcache fallback.
     Returns None if not found.
     """
     result = _memory_cache.get(CACHE_KEY_COOKIE)
     if result and isinstance(result, str):
         logger.info("Retrieved Jackett cookie from in-memory cache")
         return result
-    logger.info("No cached cookie found in memory")
+
+    if cache:
+        try:
+            disk_result = cache.get(CACHE_KEY_COOKIE)
+            if disk_result and isinstance(disk_result, str):
+                _memory_cache[CACHE_KEY_COOKIE] = disk_result
+                logger.info("Retrieved Jackett cookie from diskcache")
+                return disk_result
+        except Exception as e:
+            logger.error(f"Error reading cookie from diskcache: {str(e)}")
+
+    logger.info("No cached cookie found in memory or diskcache")
     return None
 
 def set_jackett_cookie_in_cache(cookie: str) -> bool:
     """
-    Saves Jackett cookie to in-memory cache.
+    Saves Jackett cookie to in-memory cache and diskcache.
     Returns True if successful, False otherwise.
     """
     if not isinstance(cookie, str):
@@ -153,5 +165,23 @@ def set_jackett_cookie_in_cache(cookie: str) -> bool:
         return False
 
     _memory_cache[CACHE_KEY_COOKIE] = cookie
-    logger.info("Successfully cached Jackett cookie in memory")
+    if cache:
+        try:
+            cache.set(CACHE_KEY_COOKIE, cookie, expire=CACHE_COOKIE_DURATION)
+        except Exception as e:
+            logger.error(f"Error writing cookie to diskcache: {str(e)}")
+
+    logger.info("Successfully cached Jackett cookie in memory and diskcache")
     return True
+
+def clear_jackett_cookie_cache() -> None:
+    """
+    Clears Jackett cookie from in-memory cache and diskcache.
+    """
+    _memory_cache.pop(CACHE_KEY_COOKIE, None)
+    if cache:
+        try:
+            cache.delete(CACHE_KEY_COOKIE)
+        except Exception as e:
+            logger.error(f"Error deleting cookie from diskcache: {str(e)}")
+    logger.info("Cleared Jackett cookie from cache")
