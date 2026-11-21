@@ -1,0 +1,23 @@
+[project]
+name = "jackett-python"
+version = "2.1.0"
+description = "FastAPI streaming wrapper for Jackett API"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501", "W293"]
+
+[tool.pyright]
+include = ["app", "tests"]
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
