@@ -2,7 +2,7 @@ import asyncio
 import ipaddress
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -98,7 +98,7 @@ def _is_auth_failure_response(response: httpx.Response) -> bool:
     return False
 
 
-async def fetch_indexers_data(jackett_cookie: Optional[str] = None) -> List[Dict]:
+async def fetch_indexers_data(jackett_cookie: str | None = None) -> list[dict[str, Any]]:
     """
     Fetch raw indexer data from Jackett API.
     Common function used by get_configured_indexers and get_detailed_configured_indexers.
@@ -190,7 +190,7 @@ async def fetch_indexers_data(jackett_cookie: Optional[str] = None) -> List[Dict
         raise HTTPException(status_code=500, detail=error_message) from e
 
 
-async def get_configured_indexers(jackett_cookie: Optional[str] = None) -> list[str]:
+async def get_configured_indexers(jackett_cookie: str | None = None) -> list[str]:
     indexers_data = await fetch_indexers_data(jackett_cookie)
     configured_indexers = [
         indexer["id"] for indexer in indexers_data
@@ -201,7 +201,7 @@ async def get_configured_indexers(jackett_cookie: Optional[str] = None) -> list[
     return configured_indexers
 
 
-async def get_detailed_configured_indexers(jackett_cookie: Optional[str] = None) -> List[Dict[str, str]]:
+async def get_detailed_configured_indexers(jackett_cookie: str | None = None) -> list[dict[str, str]]:
     """
     Get detailed information about configured indexers including id and site_link.
     Returns a list of dictionaries with 'id' and 'site_link' fields.
@@ -221,7 +221,7 @@ async def get_detailed_configured_indexers(jackett_cookie: Optional[str] = None)
     return detailed_indexers
 
 
-async def _fetch_results_from_jackett(indexer_id: str, query: str, jackett_cookie: str):
+async def _fetch_results_from_jackett(indexer_id: str, query: str, jackett_cookie: str) -> list[dict[str, Any]]:
     """
     Helper function to fetch results from the Jackett API.
     Raises ValueError or httpx exceptions on failure.
@@ -288,7 +288,7 @@ async def _enqueue_message(result_queue, indexer_id: str, message_type: str, dat
         logger.error(f"Failed to put {message_type} in queue for {indexer_id}: {str(queue_error)}")
 
 
-async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett_cookie: str):
+async def fetch_jackett_results_for_indexer(indexer_id: str, query: str, jackett_cookie: str) -> list[dict[str, Any]]:
     """
     Fetch results from a single indexer.
     Returns a list of results or empty list on error.
@@ -342,7 +342,8 @@ async def stream_jackett_results_for_indexer(indexer_id: str, query: str, result
         # Put error in queue
         await _enqueue_message(result_queue, indexer_id, "indexer_error", {"error": str(e)})
 
-async def get_jackett_cookie_cached(force_refresh: bool = False) -> Optional[str]:
+
+async def get_jackett_cookie_cached(force_refresh: bool = False) -> str | None:
     """
     Retrieves the 'Jackett' cookie from cache first, and if not available or force_refresh is True,
     fetches it using the authentication flow and caches it for future use.
@@ -373,7 +374,7 @@ async def get_jackett_cookie_cached(force_refresh: bool = False) -> Optional[str
         return cookie
 
 
-async def _perform_jackett_login_flow(dashboard_url: str, login_url: str) -> Optional[str]:
+async def _perform_jackett_login_flow(dashboard_url: str, login_url: str) -> str | None:
     """
     Executes the multi-step login flow to obtain the Jackett cookie.
     """
@@ -401,7 +402,8 @@ async def _perform_jackett_login_flow(dashboard_url: str, login_url: str) -> Opt
         # Check for Jackett cookie in the client's cookie jar
         return client.cookies.get('Jackett')
 
-async def get_jackett_cookie() -> Optional[str]:
+
+async def get_jackett_cookie() -> str | None:
     """
     Retrieves the 'Jackett' cookie by following the authentication flow:
     1. Request to Dashboard (follows redirect to Login)

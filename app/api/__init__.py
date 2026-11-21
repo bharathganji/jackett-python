@@ -1,26 +1,24 @@
-
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
-import orjson
 import asyncio
 import logging
+
+import orjson
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
+
 from app.services.cache import (
-    set_configured_indexers_in_cache,
     get_detailed_configured_indexers_from_cache,
+    set_configured_indexers_in_cache,
     set_detailed_configured_indexers_in_cache,
-    get_jackett_cookie_from_cache,
-    set_jackett_cookie_in_cache
 )
 from app.services.jackett_client import (
-    get_jackett_cookie_cached,
     get_configured_indexers,
     get_detailed_configured_indexers,
-    stream_jackett_results_for_indexer
+    get_jackett_cookie_cached,
+    stream_jackett_results_for_indexer,
 )
-from app.services.utils import trimmed_result, ResultDeduplicator
+from app.services.utils import ResultDeduplicator, trimmed_result
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,14 +32,14 @@ QUERY_REQUIRED_ERROR = "Query parameter is required and cannot be empty"
 STREAM_MEDIA_TYPE = "text/event-stream"
 
 
-def get_indexer_ids_from_cache():
+def get_indexer_ids_from_cache() -> set[str] | None:
     """
     Helper function to get indexer IDs from cache using detailed format.
     Returns a set of indexer IDs or None if not found.
     """
     detailed_indexers = get_detailed_configured_indexers_from_cache()
     if detailed_indexers:
-        return {indexer["id"] for indexer in detailed_indexers}
+        return {indexer["id"] for indexer in detailed_indexers if "id" in indexer}
 
     return None
 
@@ -64,11 +62,12 @@ async def ensure_jackett_auth_and_indexers():
             set_configured_indexers_in_cache(configured_indexers_list)
             configured_indexers = set(configured_indexers_list)
         except HTTPException as e:
-            logger.error(f"Failed to fetch indexers: {e.detail}")
-            raise AuthError(orjson.dumps(e.detail).decode())
-        except Exception as e:
-            logger.error(f"Unexpected error fetching indexers: {str(e)}")
-            raise AuthError(INDEXER_FETCH_ERROR)
+            detail = e.detail if isinstance(e.detail, str) else orjson.dumps(e.detail).decode()
+            logger.error(f"Failed to fetch indexers: {detail}")
+            raise AuthError(detail) from e
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Unexpected error fetching indexers: {e!s}")
+            raise AuthError(INDEXER_FETCH_ERROR) from e
 
     return jackett_cookie, configured_indexers
 
@@ -77,11 +76,17 @@ class AuthError(Exception):
     """Custom exception for authentication/indexer errors in generators"""
     pass
 
+
 # Pydantic models
 class MultipleIndexerSearchRequest(BaseModel):
-    indexer_ids: List[str]
+    indexer_ids: list[str] = Field(..., min_length=1, description="List of configured indexer IDs to search")
 
-app = FastAPI()
+
+app = FastAPI(
+    title="Jackett Python API",
+    version="2.1.0",
+    description="FastAPI streaming wrapper for Jackett API",
+)
 origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
@@ -89,17 +94,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)   
-
-
-
+)
 
 
 async def process_results_queue(
     result_queue: asyncio.Queue,
     valid_indexers: set,
     deduplicator=None,
-    is_single: bool = False
+    is_single: bool = False,
 ):
     """Common queue polling loop for generators."""
     completed_indexers = set()
@@ -129,31 +131,33 @@ async def process_results_queue(
                 failed_indexers.add(item["indexer_id"])
                 yield f"event: indexer_error\ndata: {item['indexer_id']}: {item['data']['error']}\n\n"
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # If we timeout, consider remaining indexers as failed
             remaining_indexers = list(valid_indexers.difference(completed_indexers, failed_indexers))
             for indexer_id in remaining_indexers:
                 failed_indexers.add(indexer_id)
                 yield f"event: indexer_error\ndata: {indexer_id}: Timeout\n\n"
             if is_single:
-                logger.warning(f"Single indexer search timeout: {list(remaining_indexers)[0] if remaining_indexers else 'unknown'}")
+                logger.warning(
+                    f"Single indexer search timeout: {list(remaining_indexers)[0] if remaining_indexers else 'unknown'}"
+                )
             else:
                 logger.warning(f"Search timeout: {len(remaining_indexers)} indexers timed out")
             break
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             if is_single:
                 idx = list(valid_indexers)[0] if valid_indexers else 'unknown'
-                logger.error(f"Error processing results from {idx}: {str(e)}")
+                logger.error(f"Error processing results from {idx}: {e!s}")
                 yield f"event: indexer_error\ndata: {idx}: Processing error\n\n"
             else:
-                logger.error(f"Unexpected error during search: {str(e)}")
+                logger.error(f"Unexpected error during search: {e!s}")
                 yield "event: error\ndata: " + SEARCH_ERROR + "\n\n"
             break
 
     yield {
         "completed": completed_indexers,
         "failed": failed_indexers,
-        "results_streamed": results_streamed
+        "results_streamed": results_streamed,
     }
 
 
@@ -175,7 +179,9 @@ async def event_generator(query: str):
         # Launch all indexers in parallel, each streaming to the queue
         tasks = []
         for indexer_id in configured_indexers:
-            task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
+            task = asyncio.create_task(
+                stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie)
+            )
             tasks.append(task)
 
         stats = {}
@@ -191,14 +197,17 @@ async def event_generator(query: str):
                 task.cancel()
 
         # Final status with results count
-        yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(stats['completed']), 'failed': list(stats['failed']), 'results_count': stats['results_streamed']}).decode()}\n\n"
+        yield (
+            f"event: search_complete\ndata: "
+            f"{orjson.dumps({'completed': list(stats.get('completed', [])), 'failed': list(stats.get('failed', [])), 'results_count': stats.get('results_streamed', 0)}).decode()}\n\n"
+        )
 
-    except Exception as e:
-        logger.error(f"Critical error in event generator: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Critical error in event generator: {e!s}")
         yield "event: error\ndata: " + CRITICAL_ERROR + "\n\n"
 
 
-async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
+async def multiple_indexers_event_generator(indexer_ids: list[str], query: str):
     """Stream individual results from specified indexers in parallel as they arrive"""
     try:
         try:
@@ -210,7 +219,7 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
         # Validate that all requested indexers exist
         invalid_indexers = []
         valid_indexers = []
-        
+
         for indexer_id in indexer_ids:
             if indexer_id in configured_indexers:
                 valid_indexers.append(indexer_id)
@@ -225,7 +234,10 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
 
         # If no valid indexers, stop here
         if not valid_indexers:
-            yield f"event: search_complete\ndata: {orjson.dumps({'completed': [], 'failed': invalid_indexers, 'message': 'No valid indexers provided'}).decode()}\n\n"
+            yield (
+                f"event: search_complete\ndata: "
+                f"{orjson.dumps({'completed': [], 'failed': invalid_indexers, 'message': 'No valid indexers provided'}).decode()}\n\n"
+            )
             return
 
         # Create a queue to collect results from valid indexers
@@ -234,7 +246,9 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
         # Launch valid indexers in parallel, each streaming to the queue
         tasks = []
         for indexer_id in valid_indexers:
-            task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
+            task = asyncio.create_task(
+                stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie)
+            )
             tasks.append(task)
 
         stats = {}
@@ -244,7 +258,7 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
                 break
             yield event
 
-        failed_indexers = stats['failed'].union(set(invalid_indexers))
+        failed_indexers = stats.get('failed', set()).union(set(invalid_indexers))
 
         # Cancel any remaining tasks
         for task in tasks:
@@ -252,10 +266,13 @@ async def multiple_indexers_event_generator(indexer_ids: List[str], query: str):
                 task.cancel()
 
         # Final status
-        yield f"event: search_complete\ndata: {orjson.dumps({'completed': list(stats['completed']), 'failed': list(failed_indexers)}).decode()}\n\n"
+        yield (
+            f"event: search_complete\ndata: "
+            f"{orjson.dumps({'completed': list(stats.get('completed', [])), 'failed': list(failed_indexers)}).decode()}\n\n"
+        )
 
-    except Exception as e:
-        logger.error(f"Critical error in multiple indexers generator: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Critical error in multiple indexers generator: {e!s}")
         yield "event: error\ndata: " + CRITICAL_ERROR + "\n\n"
 
 
@@ -266,9 +283,10 @@ async def search(query: str):
 
     try:
         return StreamingResponse(event_generator(query.strip()), media_type=STREAM_MEDIA_TYPE)
-    except Exception as e:
-        logger.error(f"Error in search endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error occurred during search")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error in search endpoint: {e!s}")
+        raise HTTPException(status_code=500, detail="Internal server error occurred during search") from e
+
 
 @app.get("/indexers")
 async def get_indexers():
@@ -285,7 +303,7 @@ async def get_indexers():
         if detailed_indexers:
             return JSONResponse(content={
                 "indexers": detailed_indexers,
-                "total": len(detailed_indexers)
+                "total": len(detailed_indexers),
             })
 
         # If not in cache, fetch from Jackett API
@@ -300,19 +318,20 @@ async def get_indexers():
         set_detailed_configured_indexers_in_cache(detailed_indexers)
 
         # Also cache the simple list for backward compatibility with search functions
-        simple_indexers = [indexer["id"] for indexer in detailed_indexers]
+        simple_indexers = [indexer["id"] for indexer in detailed_indexers if "id" in indexer]
         set_configured_indexers_in_cache(simple_indexers)
 
         return JSONResponse(content={
             "indexers": detailed_indexers,
-            "total": len(detailed_indexers)
+            "total": len(detailed_indexers),
         })
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error in indexers endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error occurred while fetching indexers")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error in indexers endpoint: {e!s}")
+        raise HTTPException(status_code=500, detail="Internal server error occurred while fetching indexers") from e
+
 
 async def single_indexer_event_generator(indexer_id: str, query: str):
     """Stream results from a single indexer"""
@@ -332,7 +351,9 @@ async def single_indexer_event_generator(indexer_id: str, query: str):
         result_queue = asyncio.Queue()
 
         # Launch the single indexer task
-        task = asyncio.create_task(stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie))
+        task = asyncio.create_task(
+            stream_jackett_results_for_indexer(indexer_id, query, result_queue, jackett_cookie)
+        )
 
         stats = {}
         async for event in process_results_queue(result_queue, {indexer_id}, is_single=True):
@@ -346,11 +367,14 @@ async def single_indexer_event_generator(indexer_id: str, query: str):
             task.cancel()
 
         # Final status
-        status = "completed" if indexer_id in stats['completed'] else "failed"
-        yield f"event: search_complete\ndata: {orjson.dumps({'indexer': indexer_id, 'status': status, 'results_count': stats['results_streamed']}).decode()}\n\n"
+        status = "completed" if indexer_id in stats.get('completed', set()) else "failed"
+        yield (
+            f"event: search_complete\ndata: "
+            f"{orjson.dumps({'indexer': indexer_id, 'status': status, 'results_count': stats.get('results_streamed', 0)}).decode()}\n\n"
+        )
 
-    except Exception as e:
-        logger.error(f"Critical error in single indexer generator: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Critical error in single indexer generator: {e!s}")
         yield "event: error\ndata: " + CRITICAL_ERROR + "\n\n"
 
 
@@ -366,11 +390,11 @@ async def search_single_indexer(indexer_id: str, query: str):
     try:
         return StreamingResponse(
             single_indexer_event_generator(indexer_id.strip(), query.strip()),
-            media_type="text/event-stream"
+            media_type=STREAM_MEDIA_TYPE,
         )
-    except Exception as e:
-        logger.error(f"Error in single indexer search endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error occurred during single indexer search")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error in single indexer search endpoint: {e!s}")
+        raise HTTPException(status_code=500, detail="Internal server error occurred during single indexer search") from e
 
 
 @app.post("/search/multiple")
@@ -379,51 +403,54 @@ async def search_multiple_indexers(query: str, request: MultipleIndexerSearchReq
     # Validate input
     if not request.indexer_ids or len(request.indexer_ids) == 0:
         raise HTTPException(status_code=400, detail="At least one indexer ID is required")
-    
+
     if not query or not query.strip():
         raise HTTPException(status_code=400, detail="Query parameter is required and cannot be empty")
-    
+
     # Remove duplicates and empty/whitespace-only IDs
     unique_indexer_ids = list({idx.strip() for idx in request.indexer_ids if idx and idx.strip()})
-    
+
     if not unique_indexer_ids:
         raise HTTPException(status_code=400, detail="At least one valid indexer ID is required")
-    
+
     try:
         return StreamingResponse(
             multiple_indexers_event_generator(unique_indexer_ids, query.strip()),
-            media_type="text/event-stream"
+            media_type=STREAM_MEDIA_TYPE,
         )
-    except Exception as e:
-        logger.error(f"Error in multiple indexer search endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error occurred during multiple indexer search")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error in multiple indexer search endpoint: {e!s}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error occurred during multiple indexer search"
+        ) from e
 
 
 @app.get("/")
 async def root():
     return {
         "message": "Jackett Python API - Enhanced",
-        "version": "2.1",
+        "version": "2.1.0",
         "endpoints": {
             "/search": "Search all configured indexers",
             "/search/{indexer_id}": "Search a specific indexer",
             "/search/multiple": "Search multiple specific indexers (POST with JSON body)",
-            "/indexers": "Get detailed list of configured indexers with site links"
+            "/indexers": "Get detailed list of configured indexers with site links",
         },
         "enhancements": {
             "multiple_indexer_search": "New POST endpoint at /search/multiple accepts array of indexer IDs",
             "indexers_endpoint": "Returns [{'id': 'indexer_id', 'site_link': 'https://...'}] instead of just IDs",
             "backward_compatibility": "All existing search functions remain unchanged",
-            "caching": "Enhanced caching with detailed indexer information"
+            "caching": "Enhanced caching with detailed indexer information",
         },
         "usage_examples": {
             "multiple_search": {
                 "method": "POST",
                 "url": "/search/multiple?query=your+search+query",
                 "body": {
-                    "indexer_ids": ["indexer1", "indexer2", "indexer3"]
+                    "indexer_ids": ["indexer1", "indexer2", "indexer3"],
                 },
-                "description": "Search only the specified indexers with query in URL parameter"
-            }
-        }
+                "description": "Search only the specified indexers with query in URL parameter",
+            },
+        },
     }

@@ -1,6 +1,7 @@
-from typing import Dict, Any, Optional
+from typing import Any
 
-def create_magnet_link(result: Dict[str, Any]) -> Optional[str]:
+
+def create_magnet_link(result: dict[str, Any]) -> str | None:
     """
     Creates a magnet link from a result dictionary.
     """
@@ -14,7 +15,8 @@ def create_magnet_link(result: Dict[str, Any]) -> Optional[str]:
     else:
         return torrenturl
 
-def trimmed_result(result: Dict[str, Any]) -> Dict[str, Any]:
+
+def trimmed_result(result: dict[str, Any]) -> dict[str, Any]:
     """
     Trims and formats a result dictionary for API response.
     """
@@ -26,7 +28,7 @@ def trimmed_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "Leechers": result.get("Leechers"),
         "InfoHash": result.get("InfoHash"),
         "IndexerId": result.get("Tracker"),
-        'year': result.get('Year'),
+        "year": result.get("Year"),
         "Details": result.get("Details"),
     }
 
@@ -35,21 +37,22 @@ class ResultDeduplicator:
     """
     Helper class to deduplicate search results based on InfoHash.
     """
-    def __init__(self):
-        self.seen_infohashes = set()
 
-    def is_duplicate(self, result: Dict[str, Any]) -> bool:
+    def __init__(self) -> None:
+        self.seen_infohashes: set[str] = set()
+
+    def is_duplicate(self, result: dict[str, Any]) -> bool:
         """
         Check if a result is a duplicate based on InfoHash.
         Returns True if duplicate, False if unique.
         """
         infohash = result.get("InfoHash")
-        if infohash:
+        if infohash and isinstance(infohash, str):
             if infohash in self.seen_infohashes:
                 return True
             self.seen_infohashes.add(infohash)
         return False
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the deduplicator for a new search."""
         self.seen_infohashes = set()

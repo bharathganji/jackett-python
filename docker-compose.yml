@@ -1,11 +1,16 @@
-version: '3.8'
-
 services:
   jackett-python:
     build: .
     ports:
-      - "9889:9889"
+      - "${PORT:-9889}:${PORT:-9889}"
     environment:
       - JACKETT_API_URL=${JACKETT_API_URL}
       - API_KEY=${API_KEY}
-      - PORT=${PORT}
+      - PORT=${PORT:-9889}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:${PORT:-9889}/\")' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,6 +1,5 @@
 import logging
 import os
-from typing import Dict, List, Optional
 
 from diskcache import Cache
 
@@ -14,12 +13,12 @@ CACHE_DURATION = 86400  # seconds (24 hours)
 CACHE_COOKIE_DURATION = 1209600  # seconds (14 days)
 
 # In-memory cache for cookie to work with multiprocessing
-_memory_cache = {}
+_memory_cache: dict[str, str] = {}
 
 # Ensure cache directory exists
 try:
     os.makedirs(CACHE_DIR, exist_ok=True)
-    cache = Cache(CACHE_DIR)
+    cache: Cache | None = Cache(CACHE_DIR)
     # Test cache with a simple operation
     cache.set('test_key', 'test_value', expire=10)
     test_result = cache.get('test_key')
@@ -28,11 +27,12 @@ try:
     else:
         logger.warning(f"Cache initialized but test failed at {CACHE_DIR}")
         cache = None
-except Exception as e:
-    logger.error(f"Failed to initialize cache: {str(e)}")
+except Exception as e:  # noqa: BLE001
+    logger.error(f"Failed to initialize cache: {e!s}")
     cache = None
 
-def get_configured_indexers_from_cache() -> Optional[list[str]]:
+
+def get_configured_indexers_from_cache() -> list[str] | None:
     """
     Loads configured indexers from diskcache.
     Returns None if cache is unavailable or key doesn't exist.
@@ -47,9 +47,10 @@ def get_configured_indexers_from_cache() -> Optional[list[str]]:
             logger.debug(f"Retrieved {len(result)} indexers from cache")
             return result
         return None
-    except Exception as e:
-        logger.error(f"Error reading from cache: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error reading from cache: {e!s}")
         return None
+
 
 def set_configured_indexers_in_cache(indexers: list[str]) -> bool:
     """
@@ -68,12 +69,12 @@ def set_configured_indexers_in_cache(indexers: list[str]) -> bool:
         cache.set(CACHE_KEY, indexers, expire=CACHE_DURATION)
         logger.debug(f"Cached {len(indexers)} indexers")
         return True
-    except Exception as e:
-        logger.error(f"Error writing to cache: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error writing to cache: {e!s}")
         return False
 
 
-def get_detailed_configured_indexers_from_cache() -> Optional[List[Dict[str, str]]]:
+def get_detailed_configured_indexers_from_cache() -> list[dict[str, str]] | None:
     """
     Loads detailed configured indexers from diskcache.
     Returns None if cache is unavailable or key doesn't exist.
@@ -88,17 +89,17 @@ def get_detailed_configured_indexers_from_cache() -> Optional[List[Dict[str, str
         logger.info(f"Cache get result: {type(result)}, length: {len(result) if isinstance(result, list) else 'N/A'}")
 
         if result and isinstance(result, list):
-            logger.info(f"✅ Retrieved {len(result)} detailed indexers from cache")
+            logger.info(f"Retrieved {len(result)} detailed indexers from cache")
             return result
         else:
             logger.info("No valid detailed indexers found in cache")
         return None
-    except Exception as e:
-        logger.error(f"Error reading detailed indexers from cache: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error reading detailed indexers from cache: {e!s}")
         return None
 
 
-def set_detailed_configured_indexers_in_cache(indexers: List[Dict[str, str]]) -> bool:
+def set_detailed_configured_indexers_in_cache(indexers: list[dict[str, str]]) -> bool:
     """
     Saves detailed configured indexers to diskcache.
     Returns True if successful, False otherwise.
@@ -123,16 +124,17 @@ def set_detailed_configured_indexers_in_cache(indexers: List[Dict[str, str]]) ->
         # Verify the write was successful
         verify_result = cache.get(CACHE_KEY_DETAILED)
         if isinstance(verify_result, list) and len(verify_result) == len(indexers):
-            logger.info(f"✅ Successfully cached {len(indexers)} detailed indexers")
+            logger.info(f"Successfully cached {len(indexers)} detailed indexers")
             return True
         else:
             logger.error("Cache write verification failed")
             return False
-    except Exception as e:
-        logger.error(f"Error writing detailed indexers to cache: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error writing detailed indexers to cache: {e!s}")
         return False
 
-def get_jackett_cookie_from_cache() -> Optional[str]:
+
+def get_jackett_cookie_from_cache() -> str | None:
     """
     Loads Jackett cookie from in-memory cache or diskcache fallback.
     Returns None if not found.
@@ -149,11 +151,12 @@ def get_jackett_cookie_from_cache() -> Optional[str]:
                 _memory_cache[CACHE_KEY_COOKIE] = disk_result
                 logger.info("Retrieved Jackett cookie from diskcache")
                 return disk_result
-        except Exception as e:
-            logger.error(f"Error reading cookie from diskcache: {str(e)}")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error reading cookie from diskcache: {e!s}")
 
     logger.info("No cached cookie found in memory or diskcache")
     return None
+
 
 def set_jackett_cookie_in_cache(cookie: str) -> bool:
     """
@@ -168,11 +171,12 @@ def set_jackett_cookie_in_cache(cookie: str) -> bool:
     if cache:
         try:
             cache.set(CACHE_KEY_COOKIE, cookie, expire=CACHE_COOKIE_DURATION)
-        except Exception as e:
-            logger.error(f"Error writing cookie to diskcache: {str(e)}")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error writing cookie to diskcache: {e!s}")
 
     logger.info("Successfully cached Jackett cookie in memory and diskcache")
     return True
+
 
 def clear_jackett_cookie_cache() -> None:
     """
@@ -182,6 +186,6 @@ def clear_jackett_cookie_cache() -> None:
     if cache:
         try:
             cache.delete(CACHE_KEY_COOKIE)
-        except Exception as e:
-            logger.error(f"Error deleting cookie from diskcache: {str(e)}")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Error deleting cookie from diskcache: {e!s}")
     logger.info("Cleared Jackett cookie from cache")
